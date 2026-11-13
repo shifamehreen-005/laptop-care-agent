@@ -3,6 +3,7 @@
 Read-only: this module never moves, renames, or writes anything.
 """
 
+import csv
 import hashlib
 import logging
 import sys
@@ -124,8 +125,22 @@ def docx_preview(path: Path) -> str:
     return text[:PREVIEW_CHARS]
 
 
+def is_copy_style(name: str) -> bool:
+    # Windows writes "notes (1).docx" and "notes - Copy.docx" when it copies a file.
+    stem = Path(name).stem
+    if stem.endswith(" - Copy"):
+        return True
+    if not stem.endswith(")"):
+        return False
+    opened = stem.rfind(" (")
+    if opened == -1:
+        return False
+    number = stem[opened + 2 : -1]
+    return number.isdigit()
+
+
 def mark_duplicates(records: list[dict]) -> None:
-    # Same hash means same bytes. The oldest file stays the original.
+    # Keep a plain name, such as notes_final.docx, and set aside "notes_final (1).docx".
     groups: dict[str, list[dict]] = {}
     for record in records:
         digest = record.get("sha256")
@@ -135,9 +150,30 @@ def mark_duplicates(records: list[dict]) -> None:
     for group in groups.values():
         if len(group) < 2:
             continue
-        group.sort(key=lambda record: (record["modified"] or "", record["name"].lower()))
-        for record in group[1:]:
-            record["is_duplicate"] = True
+        plain = [record for record in group if not is_copy_style(record.get("name") or "")]
+        # Several plain names: keep the oldest. All copies: keep the oldest copy.
+        pool = plain or group
+        pool.sort(key=lambda record: (record.get("modified") or "", (record.get("name") or "").lower()))
+        keeper = pool[0]
+        for record in group:
+            record["is_duplicate"] = record is not keeper
+
+
+def warn_unlabeled(records: list[dict]) -> None:
+    labels = Path(TEST_FOLDER).parent / "labels.csv"
+    known: set[str] = set()
+    if labels.is_file():
+        with labels.open(newline="", encoding="utf-8") as handle:
+            for row in csv.DictReader(handle):
+                name = (row.get("filename") or "").strip()
+                if name:
+                    known.add(name)
+    missing = [record["name"] for record in records if record["name"] not in known]
+    if not missing:
+        return
+    print("Warning: no label for:")
+    for name in missing:
+        print(f"  {name}")
 
 
 def main() -> None:
@@ -147,6 +183,7 @@ def main() -> None:
     print(f"Files: {len(records)}")
     print(f"Total size: {total_size} bytes")
     print(f"Duplicates: {duplicates}")
+    warn_unlabeled(records)
 
 
 if __name__ == "__main__":

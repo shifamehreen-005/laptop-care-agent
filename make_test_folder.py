@@ -199,6 +199,93 @@ def claim(used: set[str], name: str) -> str:
         number += 1
 
 
+def typo_plans(rng: random.Random, plans: list[Planned]) -> list[Planned]:
+    # inovice_march.pdf is a renamed copy of invoice.pdf, dated later so the original name is kept.
+    invoice = next((item for item in plans if item.name == "invoice.pdf"), None)
+    if invoice is None:
+        die("invoice.pdf is missing, so inovice_march.pdf cannot be a copy of it.")
+    now = datetime(2026, 11, 13, 12, 0, 0)
+    start = two_years_ago(now)
+    span = (now - start).total_seconds()
+    homework_when = start + timedelta(seconds=rng.uniform(0, span))
+    return [
+        Planned("inovice_march.pdf", "Receipts", invoice.when + timedelta(days=1), "invoice.pdf"),
+        Planned("homewrok.docx", "School", homework_when),
+    ]
+
+
+# Names and wording skip the rule keywords. The meaning still fits the category.
+HARD_FILES = (
+    (
+        "Document (3).docx",
+        "School",
+        "History essay\n"
+        "\n"
+        "Rome did not fall in a single day. Trade slowed, the army split, "
+        "and local leaders took charge of the towns.\n"
+        "Weak roads and empty farms mattered more than one battle. "
+        "This draft is for the Friday class.\n",
+    ),
+    (
+        "scan_0042.pdf",
+        "Other",
+        "LEASE SUMMARY\n"
+        "Unit 4B, 18 Oak Street\n"
+        "Tenant: Sam Rivera\n"
+        "Rent: 1450 each month\n"
+        "Term: 1 August 2025 to 31 July 2026\n"
+        "Deposit: 1450, due before move-in\n"
+        "Keep the unit clean and pay rent on the first day.\n",
+    ),
+    (
+        "doc1.docx",
+        "Work",
+        "Dear hiring team,\n"
+        "\n"
+        "I am applying for the junior analyst role at Harbor Transit. "
+        "I have two years of spreadsheet work and I like clear writing.\n"
+        "I can start in June. Thank you for reading this letter.\n",
+    ),
+    (
+        "payment_aug.pdf",
+        "Receipts",
+        "PAYMENT\n"
+        "Number: PAY-2208\n"
+        "Date: August 14, 2025\n"
+        "From: City Gym\n"
+        "Bill to: Sam Rivera\n"
+        "\n"
+        "August membership 39.00\n"
+        "Tax 3.12\n"
+        "Total paid 42.12\n"
+        "\n"
+        "Card ending 4242. Paid in full.\n",
+    ),
+    (
+        "reading.docx",
+        "School",
+        "Reading summary\n"
+        "\n"
+        "Chapter 2 of The Warming Earth explains how ice cores store old air. "
+        "The writer compares two cores from Greenland and Antarctica.\n"
+        "Main idea: trapped bubbles show that warm years came after high gas levels. "
+        "I will use this chapter in the Friday essay.\n",
+    ),
+)
+HARD_TEXT = {name: text for name, _category, text in HARD_FILES}
+
+
+def hard_plans(rng: random.Random) -> list[Planned]:
+    now = datetime(2026, 11, 13, 12, 0, 0)
+    start = two_years_ago(now)
+    span = (now - start).total_seconds()
+    plans = []
+    for name, category, _text in HARD_FILES:
+        when = start + timedelta(seconds=rng.uniform(0, span))
+        plans.append(Planned(name, category, when))
+    return plans
+
+
 def copy_name(name: str, number: int) -> str:
     path = Path(name)
     return f"{path.stem} ({number}){path.suffix}"
@@ -684,6 +771,14 @@ def work_text(index: int) -> str:
 
 
 def write_unique(path: Path, item: Planned, ordinal: dict[str, int], seed: int) -> None:
+    # These files use their own wording so the usual templates do not add rule keywords.
+    if item.name in HARD_TEXT:
+        text = HARD_TEXT[item.name]
+        if path.suffix.lower() == ".pdf":
+            write_pdf(path, text)
+        else:
+            write_docx(path, text)
+        return
     ordinal[item.category] = ordinal.get(item.category, 0)
     index = ordinal[item.category]
     ordinal[item.category] += 1
@@ -726,9 +821,10 @@ def write_labels(path: Path, plans: list[Planned]) -> None:
     # Beside the test folder, not inside it, so the answer key is not one of the downloads.
     with path.open("x", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["filename", "true_category"])
+        writer.writerow(["filename", "true_category", "is_duplicate"])
         for item in plans:
-            writer.writerow([item.name, item.category])
+            # source is set only when this file is a byte copy of another file.
+            writer.writerow([item.name, item.category, "yes" if item.source else "no"])
 
 
 def report(folder: Path, labels_path: Path, plans: list[Planned]) -> None:
@@ -784,9 +880,12 @@ def main() -> None:
     counts = allocate(count)
     if sum(counts.values()) != count:
         die("File mix does not add up to --count.")
-    plans = build_plans(counts, make_dates(count, random.Random(args.seed)))
+    rng = random.Random(args.seed)
+    plans = build_plans(counts, make_dates(count, rng))
     if len(plans) != count:
         die("Planned file count does not match --count.")
+    plans.extend(typo_plans(rng, plans))
+    plans.extend(hard_plans(rng))
     folder.mkdir(parents=True, exist_ok=True)
     write_plans(folder, plans, args.seed)
     write_labels(labels_path, plans)
