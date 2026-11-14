@@ -7,11 +7,12 @@ Usage:
 
 import argparse
 import csv
-import os
+import ctypes
 import random
 import shutil
 import sys
 import zipfile
+from ctypes import wintypes
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
@@ -200,7 +201,7 @@ def claim(used: set[str], name: str) -> str:
 
 
 def typo_plans(rng: random.Random, plans: list[Planned]) -> list[Planned]:
-    # inovice_march.pdf is a renamed copy of invoice.pdf, dated later so the original name is kept.
+    # Same bytes as invoice.pdf. Both dates are set when the file is written.
     invoice = next((item for item in plans if item.name == "invoice.pdf"), None)
     if invoice is None:
         die("invoice.pdf is missing, so inovice_march.pdf cannot be a copy of it.")
@@ -209,7 +210,7 @@ def typo_plans(rng: random.Random, plans: list[Planned]) -> list[Planned]:
     span = (now - start).total_seconds()
     homework_when = start + timedelta(seconds=rng.uniform(0, span))
     return [
-        Planned("inovice_march.pdf", "Receipts", invoice.when + timedelta(days=1), "invoice.pdf"),
+        Planned("inovice_march.pdf", "Receipts", invoice.when, "invoice.pdf"),
         Planned("homewrok.docx", "School", homework_when),
     ]
 
@@ -367,7 +368,7 @@ def build_plans(counts: dict[str, int], dates: list[datetime]) -> list[Planned]:
     for source in copies:
         seen[source.name] = seen.get(source.name, 0) + 1
         name = claim(used, copy_name(source.name, seen[source.name]))
-        plans.append(Planned(name, source.category, take_date(), source.name))
+        plans.append(Planned(name, source.category, source.when, source.name))
     return plans
 
 
@@ -406,9 +407,76 @@ def inside_folder(folder: Path, name: str) -> Path:
     return path
 
 
+# Created and modified are the same value. The oldest plain name is kept.
+FIXED_DATES = {
+    "invoice (1).pdf": datetime(2026, 1, 1, 10, 0),
+    "inovice_march.pdf": datetime(2026, 1, 2, 10, 0),
+    "invoice.pdf": datetime(2026, 1, 3, 10, 0),
+}
+
+
+def file_date(item: Planned, known: dict[str, datetime], copies: dict[str, int]) -> datetime:
+    """One date for both created and modified. Each copy is one day after its original."""
+    fixed = FIXED_DATES.get(item.name)
+    if fixed is not None:
+        return fixed
+    if item.source:
+        copies[item.source] = copies.get(item.source, 0) + 1
+        return known[item.source] + timedelta(days=copies[item.source])
+    return item.when
+
+
 def stamp(path: Path, when: datetime) -> None:
-    timestamp = when.timestamp()
-    os.utime(path, (timestamp, timestamp))
+    set_file_times(path, when)
+
+
+def set_file_times(path: Path, when: datetime) -> None:
+    """Set created and modified together. Windows drops a created date set on its own."""
+    ticks = int((when.timestamp() + 11644473600) * 10_000_000)
+    filetime = wintypes.FILETIME(ticks & 0xFFFFFFFF, (ticks >> 32) & 0xFFFFFFFF)
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.SetFileTime.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    ]
+    kernel32.SetFileTime.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel32.CreateFileW(str(path), 0x0100, 7, None, 3, 0x80, None)
+    invalid = ctypes.c_void_p(-1).value
+    if handle is None or handle == invalid or handle == wintypes.HANDLE(-1).value:
+        die(f"Could not set the created date of {path.name}.")
+    try:
+        wrote = kernel32.SetFileTime(
+            handle,
+            ctypes.byref(filetime),
+            ctypes.byref(filetime),
+            ctypes.byref(filetime),
+        )
+        if not wrote:
+            die(f"Could not set the created date of {path.name}.")
+    finally:
+        kernel32.CloseHandle(handle)
+    info = path.stat()
+    want = when.strftime("%Y-%m-%d %H:%M")
+    birth = getattr(info, "st_birthtime", None)
+    if not birth:
+        die(f"Windows did not keep a created date for {path.name}.")
+    created = datetime.fromtimestamp(birth).strftime("%Y-%m-%d %H:%M")
+    modified = datetime.fromtimestamp(info.st_mtime).strftime("%Y-%m-%d %H:%M")
+    if created != want or modified != want:
+        die(f"Windows did not keep the dates for {path.name}.")
 
 
 def write_pdf(path: Path, text: str) -> None:
@@ -804,6 +872,8 @@ def write_unique(path: Path, item: Planned, ordinal: dict[str, int], seed: int) 
 
 def write_plans(folder: Path, plans: list[Planned], seed: int) -> None:
     written: dict[str, Path] = {}
+    dated: dict[str, datetime] = {}
+    copies: dict[str, int] = {}
     ordinal: dict[str, int] = {}
     for item in plans:
         if item.category not in CATEGORIES:
@@ -813,8 +883,10 @@ def write_plans(folder: Path, plans: list[Planned], seed: int) -> None:
             write_unique(path, item, ordinal, seed)
         else:
             shutil.copyfile(written[item.source], path)
-        stamp(path, item.when)
+        when = file_date(item, dated, copies)
+        stamp(path, when)
         written[item.name] = path
+        dated[item.name] = when
 
 
 def write_labels(path: Path, plans: list[Planned]) -> None:
@@ -823,8 +895,16 @@ def write_labels(path: Path, plans: list[Planned]) -> None:
         writer = csv.writer(handle)
         writer.writerow(["filename", "true_category", "is_duplicate"])
         for item in plans:
-            # source is set only when this file is a byte copy of another file.
-            writer.writerow([item.name, item.category, "yes" if item.source else "no"])
+            writer.writerow([item.name, item.category, duplicate_label(item)])
+
+
+def duplicate_label(item: Planned) -> str:
+    # inovice_march.pdf is the older plain name, so it is kept and invoice.pdf is the copy.
+    if item.name == "inovice_march.pdf":
+        return "no"
+    if item.name in {"invoice.pdf", "invoice (1).pdf"}:
+        return "yes"
+    return "yes" if item.source else "no"
 
 
 def report(folder: Path, labels_path: Path, plans: list[Planned]) -> None:
@@ -837,6 +917,23 @@ def report(folder: Path, labels_path: Path, plans: list[Planned]) -> None:
     for category in CATEGORIES:
         print(f"  {category}: {tally[category]}")
     print(f"Labels: {labels_path}")
+    print_created_dates(folder)
+
+
+def print_created_dates(folder: Path) -> None:
+    for name in ("invoice (1).pdf", "inovice_march.pdf", "invoice.pdf"):
+        path = folder / name
+        if not path.is_file():
+            print(f"{name} was not created")
+            continue
+        info = path.stat()
+        birth = getattr(info, "st_birthtime", None)
+        if not birth:
+            print(f"{name} has no created date")
+            continue
+        created = datetime.fromtimestamp(birth).strftime("%Y-%m-%d %H:%M")
+        modified = datetime.fromtimestamp(info.st_mtime).strftime("%Y-%m-%d %H:%M")
+        print(f"{name} created {created}  modified {modified}")
 
 
 def parse_args() -> argparse.Namespace:

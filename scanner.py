@@ -13,22 +13,43 @@ from pathlib import Path
 # Preview failures are stored on the file, so the PDF library should stay quiet.
 logging.getLogger("pypdf").setLevel(logging.ERROR)
 
-from config import TEST_FOLDER
+from config import CATEGORIES, TEST_FOLDER
 
 PREVIEW_CHARS = 300
+# Review is a place the agent uses. Anything else was made by the user.
+AGENT_FOLDERS = tuple(CATEGORIES) + ("Review",)
 
 
 def scan_folder(path) -> list[dict]:
-    """Describe each file in path. One unreadable file does not stop the scan."""
+    """Describe files in the top level and in the agent's own folders.
+
+    One unreadable file does not stop the scan. User-made folders are skipped.
+    """
     folder = Path(path)
     assert_readable(folder)
     records = []
     for item in sorted(folder.iterdir(), key=lambda entry: entry.name.lower()):
-        if not item.is_file():
+        if item.is_file():
+            records.append(describe_file(folder, item, ""))
+    for name in AGENT_FOLDERS:
+        sub = folder / name
+        # _safe_to_remove and folders the user created are not in this list.
+        if not sub.is_dir() or not stays_in(folder, sub):
             continue
-        records.append(describe_file(folder, item))
+        for item in sorted(sub.iterdir(), key=lambda entry: entry.name.lower()):
+            if item.is_file():
+                records.append(describe_file(folder, item, name))
     mark_duplicates(records)
     return records
+
+
+def stays_in(root: Path, path: Path) -> bool:
+    base = root.resolve()
+    try:
+        candidate = path.resolve()
+    except OSError:
+        return False
+    return candidate == base or base in candidate.parents
 
 
 def assert_readable(folder: Path) -> None:
@@ -50,26 +71,31 @@ def assert_readable(folder: Path) -> None:
             )
 
 
-def describe_file(folder: Path, item: Path) -> dict:
+def describe_file(root: Path, item: Path, folder_name: str) -> dict:
     record = {
         "name": item.name,
         "path": str(item),
+        "folder": folder_name,
         "extension": item.suffix.lower(),
         "size_bytes": None,
         "modified": None,
+        "added": None,
         "sha256": None,
         "preview_text": "",
         "is_duplicate": False,
+        "duplicate_of": "",
     }
     # A link can point outside the folder. Do not follow it.
     resolved = item.resolve()
-    if resolved.parent != folder.resolve():
+    expected = root.resolve() if not folder_name else (root.resolve() / folder_name).resolve()
+    if resolved.parent != expected:
         record["error"] = "File resolves outside the folder."
         return record
     try:
         info = item.stat()
         record["size_bytes"] = info.st_size
         record["modified"] = datetime.fromtimestamp(info.st_mtime).isoformat(timespec="seconds")
+        record["added"] = arrival_time(info)
         record["sha256"] = sha256_file(item)
     except OSError as err:
         record["error"] = str(err)
@@ -125,6 +151,13 @@ def docx_preview(path: Path) -> str:
     return text[:PREVIEW_CHARS]
 
 
+def arrival_time(info) -> str:
+    """When the file arrived. Windows creation time, or the modified time if that is missing."""
+    birth = getattr(info, "st_birthtime", None)
+    stamp = info.st_mtime if not birth else birth
+    return datetime.fromtimestamp(stamp).isoformat(timespec="seconds")
+
+
 def is_copy_style(name: str) -> bool:
     # Windows writes "notes (1).docx" and "notes - Copy.docx" when it copies a file.
     stem = Path(name).stem
@@ -140,7 +173,7 @@ def is_copy_style(name: str) -> bool:
 
 
 def mark_duplicates(records: list[dict]) -> None:
-    # Keep a plain name, such as notes_final.docx, and set aside "notes_final (1).docx".
+    """Same bytes anywhere in the scan are one group. Copy-style names lose to a plain name."""
     groups: dict[str, list[dict]] = {}
     for record in records:
         digest = record.get("sha256")
@@ -151,12 +184,23 @@ def mark_duplicates(records: list[dict]) -> None:
         if len(group) < 2:
             continue
         plain = [record for record in group if not is_copy_style(record.get("name") or "")]
-        # Several plain names: keep the oldest. All copies: keep the oldest copy.
+        # No plain name: the oldest copy-style file is kept. Otherwise every copy-style name loses.
         pool = plain or group
-        pool.sort(key=lambda record: (record.get("modified") or "", (record.get("name") or "").lower()))
+        pool.sort(key=keep_key)
         keeper = pool[0]
+        kept = keeper.get("name") or ""
         for record in group:
             record["is_duplicate"] = record is not keeper
+            record["duplicate_of"] = "" if record is keeper else kept
+
+
+def keep_key(record: dict) -> tuple:
+    # Oldest arrival, then oldest edit, then the name that comes first alphabetically.
+    return (
+        record.get("added") or "",
+        record.get("modified") or "",
+        (record.get("name") or "").lower(),
+    )
 
 
 def warn_unlabeled(records: list[dict]) -> None:

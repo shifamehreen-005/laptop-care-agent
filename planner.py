@@ -10,19 +10,28 @@ DUPLICATE_FOLDER = "_safe_to_remove"
 
 
 def build_plan(files, use_ai=True, debug=False) -> list[dict]:
-    """One move action per file. Duplicates go to _safe_to_remove."""
+    """One move action per file that should move. Duplicates go to _safe_to_remove."""
     plan = []
     for file in files:
         name = file.get("name") or ""
+        current = file.get("folder") or ""
         if file.get("is_duplicate"):
+            kept = file.get("duplicate_of") or ""
             plan.append(
                 {
                     "name": name,
+                    "folder": current,
                     "destination": DUPLICATE_FOLDER,
-                    "reason": "duplicate of an older file",
+                    "reason": f"copy of {kept}",
                     "source": "rule",
                 }
             )
+            continue
+        # A file the user already filed stays, unless a rule is sure it belongs elsewhere.
+        if current:
+            suggestion = suggested_fix(file, current)
+            if suggestion is not None:
+                plan.append(suggestion)
             continue
         category, reason, source = classifier.classify(file, use_ai=use_ai)
         if debug and source == "ai":
@@ -35,6 +44,7 @@ def build_plan(files, use_ai=True, debug=False) -> list[dict]:
         plan.append(
             {
                 "name": name,
+                "folder": "",
                 "destination": category,
                 "reason": reason,
                 "source": source,
@@ -43,7 +53,40 @@ def build_plan(files, use_ai=True, debug=False) -> list[dict]:
     return plan
 
 
+def suggested_fix(file, current: str) -> dict | None:
+    """A rule-only suggestion. The AI is not asked about a file that already has a folder."""
+    ruled = classifier.rule_category(file)
+    if ruled is None:
+        return None
+    category = ruled[0]
+    if category == current:
+        return None
+    name = file.get("name") or ""
+    return {
+        "name": name,
+        "folder": current,
+        "destination": category,
+        "reason": f"{name} is in {current} but looks like {category}",
+        "source": "rule",
+        "suggested": True,
+    }
+
+
 def summary(plan) -> str:
+    """The move sentence, then one line for each suggested fix."""
+    suggestions = [action for action in plan if action.get("suggested")]
+    moves = [action for action in plan if not action.get("suggested")]
+    if moves:
+        lines = [move_summary(moves)]
+    elif not suggestions:
+        return "Nothing to move."
+    else:
+        lines = []
+    lines.extend(action["reason"] for action in suggestions)
+    return "\n".join(lines)
+
+
+def move_summary(plan) -> str:
     """One plain-English sentence, such as 'Move 42 files into Receipts...'."""
     counts: dict[str, int] = {}
     for action in plan:
