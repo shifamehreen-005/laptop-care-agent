@@ -1,9 +1,11 @@
 """Apply a plan, undo it, and check the folder matches the first snapshot."""
 
+import io
 import json
 import os
 import sys
 import tempfile
+from contextlib import redirect_stdout
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -54,7 +56,9 @@ def test_undo_restores_snapshot(tmp_path):
     assert [item["run_id"] for item in moves] == [run_id, run_id, run_id]
     assert moves[0]["from"] == "essay.txt" and moves[0]["to"] == "School/essay.txt"
     assert moves[2]["to"] == "Work/notes (3).txt"
-    assert set(moves[0]) == {"timestamp", "run_id", "from", "to"}
+    assert set(moves[0]) == {"timestamp", "run_id", "from", "to", "sha256"}
+    assert moves[0]["sha256"] == file_hash(before, "essay.txt")
+    assert moves[2]["sha256"] == file_hash(before, "notes.txt")
     assert {item["created_dir"] for item in created} == {"School", "_safe_to_remove"}
     assert all(set(item) == {"run_id", "created_dir"} and item["run_id"] == run_id for item in created)
 
@@ -90,6 +94,51 @@ def test_undo_skips_a_missing_file_and_continues(tmp_path):
     executor.undo(run_id, log_path)
     assert (folder / "kept.txt").is_file()
     assert not (folder / "School" / "gone.txt").exists()
+
+
+def test_undo_finds_a_file_renamed_after_apply(tmp_path):
+    folder = Path(tmp_path) / "Downloads"
+    folder.mkdir()
+    (folder / "essay.txt").write_text("a school essay about rivers", encoding="utf-8")
+    executor.TEST_FOLDER = str(folder)
+    log_path = Path(tmp_path) / "undo.log"
+    run_id = executor.apply_plan(
+        [{"name": "essay.txt", "destination": "School"}],
+        True,
+        log_path,
+    )
+    (folder / "School" / "essay.txt").rename(folder / "School" / "paper.txt")
+
+    report = io.StringIO()
+    with redirect_stdout(report):
+        executor.undo(run_id, log_path)
+
+    assert "found renamed: paper.txt" in report.getvalue()
+    assert (folder / "essay.txt").read_text(encoding="utf-8") == "a school essay about rivers"
+    assert not (folder / "School" / "paper.txt").exists()
+
+
+def test_undo_does_not_overwrite_a_new_file(tmp_path):
+    folder = Path(tmp_path) / "Downloads"
+    folder.mkdir()
+    (folder / "essay.txt").write_text("original essay", encoding="utf-8")
+    executor.TEST_FOLDER = str(folder)
+    log_path = Path(tmp_path) / "undo.log"
+    run_id = executor.apply_plan(
+        [{"name": "essay.txt", "destination": "School"}],
+        True,
+        log_path,
+    )
+    (folder / "essay.txt").write_text("a new file the user added", encoding="utf-8")
+
+    report = io.StringIO()
+    with redirect_stdout(report):
+        executor.undo(run_id, log_path)
+
+    assert "Name taken, restored as essay (2).txt" in report.getvalue()
+    assert (folder / "essay.txt").read_text(encoding="utf-8") == "a new file the user added"
+    assert (folder / "essay (2).txt").read_text(encoding="utf-8") == "original essay"
+    assert not (folder / "School" / "essay.txt").exists()
 
 
 def test_oldest_plain_name_is_kept(tmp_path):
@@ -144,30 +193,38 @@ def test_duplicate_inside_category_folder(tmp_path):
     receipts.mkdir()
     (receipts / "invoice.txt").write_text("same receipt bytes", encoding="utf-8")
     (receipts / "invoice (1).txt").write_text("same receipt bytes", encoding="utf-8")
-    # The user made this folder. Its file is not part of the scan.
+    # The user made this folder. The copy inside it is still a duplicate.
     personal = folder / "Personal"
     personal.mkdir()
     (personal / "invoice (2).txt").write_text("same receipt bytes", encoding="utf-8")
+    nested = personal / "old"
+    nested.mkdir()
+    (nested / "invoice (3).txt").write_text("same receipt bytes", encoding="utf-8")
 
     executor.TEST_FOLDER = str(folder)
     files = scan_folder(folder)
-    assert {item["name"] for item in files} == {"invoice.txt", "invoice (1).txt"}
+    assert {item["name"] for item in files} == {
+        "invoice.txt",
+        "invoice (1).txt",
+        "invoice (2).txt",
+        "invoice (3).txt",
+    }
     plan = build_plan(files, use_ai=False)
-    assert plan == [
-        {
-            "name": "invoice (1).txt",
-            "folder": "Receipts",
-            "destination": "_safe_to_remove",
-            "reason": "copy of invoice.txt",
-            "source": "rule",
-        }
-    ]
+    found = {(item["name"], item["folder"], item["destination"]) for item in plan}
+    assert found == {
+        ("invoice (1).txt", "Receipts", "_safe_to_remove"),
+        ("invoice (2).txt", "Personal", "_safe_to_remove"),
+        ("invoice (3).txt", "Personal/old", "_safe_to_remove"),
+    }
     before = snapshot(folder)
     log_path = Path(tmp_path) / "undo.log"
     run_id = executor.apply_plan(plan, True, log_path)
     assert (folder / "_safe_to_remove" / "invoice (1).txt").is_file()
+    assert (folder / "_safe_to_remove" / "invoice (2).txt").is_file()
+    assert (folder / "_safe_to_remove" / "invoice (3).txt").is_file()
     assert not (folder / "Receipts" / "invoice (1).txt").exists()
-    assert (personal / "invoice (2).txt").is_file()
+    assert not (personal / "invoice (2).txt").exists()
+    assert not (nested / "invoice (3).txt").exists()
     executor.undo(run_id, log_path)
     after = snapshot(folder)
     assert after == before, "\n".join(compare(before, after))
@@ -239,6 +296,71 @@ def test_suggested_fix_applied_and_undone(tmp_path):
     assert (work / "invoice.txt").is_file()
 
 
+def test_user_move_is_applied_and_undone(tmp_path):
+    folder = Path(tmp_path) / "Downloads"
+    folder.mkdir()
+    (folder / "notes.txt").write_text("meeting notes for monday", encoding="utf-8")
+    executor.TEST_FOLDER = str(folder)
+    before = snapshot(folder)
+    # The user picked School in Move to. That choice is the plan Approve runs.
+    plan = [{"name": "notes.txt", "folder": "", "destination": "School", "moved_by_you": True}]
+    log_path = Path(tmp_path) / "undo.log"
+    run_id = executor.apply_plan(plan, True, log_path)
+    assert (folder / "School" / "notes.txt").is_file()
+    assert not (folder / "notes.txt").exists()
+    executor.undo(run_id, log_path)
+    after = snapshot(folder)
+    assert after == before, "\n".join(compare(before, after))
+
+
+def test_large_file_set_aside_is_applied_and_undone(tmp_path):
+    folder = Path(tmp_path) / "Downloads"
+    folder.mkdir()
+    (folder / "old_game_setup.exe").write_bytes(b"dummy installer")
+    executor.TEST_FOLDER = str(folder)
+    before = snapshot(folder)
+    # Ticked Set aside. Approve sends it to _safe_to_remove instead of Installers.
+    plan = [
+        {
+            "name": "old_game_setup.exe",
+            "folder": "",
+            "destination": "_safe_to_remove",
+            "set_aside": True,
+        }
+    ]
+    log_path = Path(tmp_path) / "undo.log"
+    run_id = executor.apply_plan(plan, True, log_path)
+    assert (folder / "_safe_to_remove" / "old_game_setup.exe").is_file()
+    assert not (folder / "old_game_setup.exe").exists()
+    executor.undo(run_id, log_path)
+    after = snapshot(folder)
+    assert after == before, "\n".join(compare(before, after))
+    assert not (folder / "_safe_to_remove").exists()
+
+
+def test_renamed_and_custom_labels_restore(tmp_path):
+    folder = Path(tmp_path) / "Downloads"
+    folder.mkdir()
+    (folder / "essay.txt").write_text("a school essay about rivers", encoding="utf-8")
+    (folder / "notes.txt").write_text("meeting notes for monday", encoding="utf-8")
+    executor.TEST_FOLDER = str(folder)
+    before = snapshot(folder)
+    # School was renamed to Classes. Trips is a label the user added.
+    plan = [
+        {"name": "essay.txt", "folder": "", "destination": "Classes"},
+        {"name": "notes.txt", "folder": "", "destination": "Trips"},
+    ]
+    log_path = Path(tmp_path) / "undo.log"
+    run_id = executor.apply_plan(plan, True, log_path)
+    assert (folder / "Classes" / "essay.txt").is_file()
+    assert (folder / "Trips" / "notes.txt").is_file()
+    executor.undo(run_id, log_path)
+    after = snapshot(folder)
+    assert after == before, "\n".join(compare(before, after))
+    assert not (folder / "Classes").exists()
+    assert not (folder / "Trips").exists()
+
+
 def set_times(path: Path, added: int, modified: int) -> None:
     """Set creation time (added) and modified time. Creation time is st_birthtime on Windows."""
     os.utime(path, (modified, modified))
@@ -279,6 +401,59 @@ def set_times(path: Path, added: int, modified: int) -> None:
         kernel32.CloseHandle(handle)
 
 
+def test_delete_then_undo_goes_back_to_before_approve(tmp_path):
+    folder = Path(tmp_path) / "Downloads"
+    folder.mkdir()
+    (folder / "essay.txt").write_text("a school essay about rivers", encoding="utf-8")
+    (folder / "copy.txt").write_text("a duplicate", encoding="utf-8")
+    outside = Path(tmp_path) / "keep.txt"
+    outside.write_text("do not touch", encoding="utf-8")
+    executor.TEST_FOLDER = str(folder)
+    before = snapshot(folder)
+    log_path = Path(tmp_path) / "undo.log"
+
+    run_id = executor.apply_plan(
+        [
+            {"name": "essay.txt", "destination": "School"},
+            {"name": "copy.txt", "destination": "_safe_to_remove"},
+        ],
+        True,
+        log_path,
+    )
+    assert executor.delete_logged([outside], log_path) == 0
+    assert outside.read_text(encoding="utf-8") == "do not touch"
+    assert executor.delete_safe_folder(log_path) == 1
+    assert not (folder / "_safe_to_remove").exists()
+
+    executor.undo_approval(run_id, log_path)
+    after = snapshot(folder)
+    assert after == before, "\n".join(compare(before, after))
+    assert not (folder / "School").exists()
+    assert not (folder / "_safe_to_remove").exists()
+    assert not log_path.exists()
+    assert not (Path(tmp_path) / "undo_deleted").exists()
+
+
+def test_restore_puts_the_folder_back_and_leaves_nothing_behind(tmp_path):
+    folder = Path(tmp_path) / "Downloads"
+    safe = folder / "_safe_to_remove"
+    safe.mkdir(parents=True)
+    (safe / "copy.txt").write_text("a duplicate", encoding="utf-8")
+    (folder / "keep.txt").write_text("leave this", encoding="utf-8")
+    executor.TEST_FOLDER = str(folder)
+    log_path = Path(tmp_path) / "undo.log"
+
+    assert executor.delete_safe_folder(log_path) == 1
+    assert not safe.exists()
+    assert executor.unrestored_deletions(log_path)
+    assert executor.restore_deleted_files(log_path) == 1
+    assert (safe / "copy.txt").read_text(encoding="utf-8") == "a duplicate"
+    assert (folder / "keep.txt").is_file()
+    assert not executor.unrestored_deletions(log_path)
+    assert not log_path.exists()
+    assert not (Path(tmp_path) / "undo_deleted").exists()
+
+
 def file_hash(snap, relative: str) -> str:
     for path, digest in snap:
         if path == relative:
@@ -292,9 +467,23 @@ if __name__ == "__main__":
     with tempfile.TemporaryDirectory(prefix="laptop-care-undo-") as directory:
         test_undo_skips_a_missing_file_and_continues(directory)
     with tempfile.TemporaryDirectory(prefix="laptop-care-undo-") as directory:
+        test_undo_finds_a_file_renamed_after_apply(directory)
+    with tempfile.TemporaryDirectory(prefix="laptop-care-undo-") as directory:
+        test_undo_does_not_overwrite_a_new_file(directory)
+    with tempfile.TemporaryDirectory(prefix="laptop-care-undo-") as directory:
         test_oldest_plain_name_is_kept(directory)
     with tempfile.TemporaryDirectory(prefix="laptop-care-undo-") as directory:
         test_duplicate_inside_category_folder(directory)
     with tempfile.TemporaryDirectory(prefix="laptop-care-undo-") as directory:
         test_suggested_fix_applied_and_undone(directory)
+    with tempfile.TemporaryDirectory(prefix="laptop-care-undo-") as directory:
+        test_user_move_is_applied_and_undone(directory)
+    with tempfile.TemporaryDirectory(prefix="laptop-care-undo-") as directory:
+        test_large_file_set_aside_is_applied_and_undone(directory)
+    with tempfile.TemporaryDirectory(prefix="laptop-care-undo-") as directory:
+        test_renamed_and_custom_labels_restore(directory)
+    with tempfile.TemporaryDirectory(prefix="laptop-care-undo-") as directory:
+        test_delete_then_undo_goes_back_to_before_approve(directory)
+    with tempfile.TemporaryDirectory(prefix="laptop-care-undo-") as directory:
+        test_restore_puts_the_folder_back_and_leaves_nothing_behind(directory)
     print("ok")

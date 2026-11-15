@@ -20,10 +20,60 @@ PREVIEW_CHARS = 300
 AGENT_FOLDERS = tuple(CATEGORIES) + ("Review",)
 
 
-def scan_folder(path) -> list[dict]:
-    """Describe files in the top level and in the agent's own folders.
+def agent_folder_names() -> list[str]:
+    """Default folders plus renamed and custom labels from folders.json."""
+    names = list(AGENT_FOLDERS)
+    seen = {name.casefold() for name in names}
+    try:
+        from folders import saved_names
 
-    One unreadable file does not stop the scan. User-made folders are skipped.
+        extra = saved_names()
+    except OSError:
+        extra = []
+    for name in extra:
+        if not name or name.casefold() in seen or name == "_safe_to_remove":
+            continue
+        seen.add(name.casefold())
+        names.append(name)
+    return names
+
+
+def folders_to_read(folder: Path) -> list[str]:
+    """Every folder under the one the user chose. Not a fixed name list.
+
+    _safe_to_remove is the holding area, so it is not scanned again.
+    """
+    names = []
+    seen = set()
+
+    def walk(current: Path) -> None:
+        try:
+            entries = list(current.iterdir())
+        except OSError:
+            return
+        for item in sorted(entries, key=lambda entry: entry.name.lower()):
+            if not item.is_dir() or item.name.startswith(".") or item.name == "_safe_to_remove":
+                continue
+            if not stays_in(folder, item):
+                continue
+            try:
+                resolved = item.resolve()
+            except OSError:
+                continue
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            names.append(item.relative_to(folder).as_posix())
+            walk(item)
+
+    walk(folder)
+    return names
+
+
+def scan_folder(path) -> list[dict]:
+    """Describe every file under the chosen folder.
+
+    One unreadable file does not stop the scan. _safe_to_remove is not read.
     """
     folder = Path(path)
     assert_readable(folder)
@@ -31,9 +81,8 @@ def scan_folder(path) -> list[dict]:
     for item in sorted(folder.iterdir(), key=lambda entry: entry.name.lower()):
         if item.is_file():
             records.append(describe_file(folder, item, ""))
-    for name in AGENT_FOLDERS:
+    for name in folders_to_read(folder):
         sub = folder / name
-        # _safe_to_remove and folders the user created are not in this list.
         if not sub.is_dir() or not stays_in(folder, sub):
             continue
         for item in sorted(sub.iterdir(), key=lambda entry: entry.name.lower()):

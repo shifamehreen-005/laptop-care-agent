@@ -764,6 +764,13 @@ def write_installer(path: Path) -> None:
     path.write_bytes(message.encode("ascii"))
 
 
+def write_large_installer(path: Path) -> None:
+    """120 MB on disk, with only the last byte stored, so the large-file row has something to list."""
+    with path.open("wb") as handle:
+        handle.seek((120 * 1_048_576) - 1)
+        handle.write(b"\0")
+
+
 def write_archive(path: Path) -> None:
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr(
@@ -840,6 +847,9 @@ def work_text(index: int) -> str:
 
 def write_unique(path: Path, item: Planned, ordinal: dict[str, int], seed: int) -> None:
     # These files use their own wording so the usual templates do not add rule keywords.
+    if item.name == "old_game_setup.exe":
+        write_large_installer(path)
+        return
     if item.name in HARD_TEXT:
         text = HARD_TEXT[item.name]
         if path.suffix.lower() == ".pdf":
@@ -983,6 +993,8 @@ def main() -> None:
         die("Planned file count does not match --count.")
     plans.extend(typo_plans(rng, plans))
     plans.extend(hard_plans(rng))
+    # Extra on purpose, so --count stays the mixed set and this file is always there.
+    plans.append(Planned("old_game_setup.exe", "Installers", datetime(2026, 1, 15, 10, 0, 0)))
     folder.mkdir(parents=True, exist_ok=True)
     write_plans(folder, plans, args.seed)
     write_labels(labels_path, plans)

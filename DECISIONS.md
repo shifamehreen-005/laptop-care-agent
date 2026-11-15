@@ -28,6 +28,7 @@ Why: real files are never at risk while I build and test.
 
 **7. Never delete, never overwrite, nothing moves without approval, every move is logged.**
 Why: "deleted" files go to `_safe_to_remove`, name clashes get " (2)", and the undo log lets one command put everything back. Trust is the whole point of the product.
+Later: a real delete was added on the done screen, but it is still restorable (see 51).
 
 **8. The planner only prints a plan; it never moves files.**
 Why: you see exactly what will happen before anything changes.
@@ -118,6 +119,7 @@ Why: a deliberate action before any change. The app's Approve button will replac
 
 **31. The undo log is one JSON line per move: `{timestamp, run_id, from, to}`.** `--undo` reverses the most recent run, newest move first. `--runs` lists past runs.
 Why: plain text that's easy to read and check. Reversing in order puts every file back exactly, including suggested fixes.
+Later: each line also has a sha256, folders a run creates are logged, and a delete is logged with where its copy is kept. Lines for a finished undo or restore are removed (see 53).
 
 **32. If a file was moved or removed after a run, undo skips it, reports it, and keeps going.**
 Why: people change things between tidying and undoing. One missing file shouldn't stop everything else from coming back.
@@ -170,3 +172,86 @@ TotalHours        : 0.000338684166666667
 TotalMinutes      : 0.02032105
 TotalSeconds      : 1.219263
 TotalMilliseconds : 1219.263
+
+## The app
+
+Newest screen decisions. Each one is something we settled on after using the review screen.
+
+**37. Approve is the only way to keep a change.**
+The top row is Approve and Cancel, with "Nothing moves until you approve." There is no Save button.
+Why: Save was easy to mix up with Approve, and it stored folder names before any file had moved.
+
+**38. A label you make is kept only after Approve really moves files.**
+On the next scan it shows up only if that Approve ran in the test folder. Approving any other folder says "Nothing was moved." and does not keep the label.
+Why: a name that was only typed was coming back on the next scan, as if it had been approved.
+
+**39. Undo steps back one edit. Reset puts this scan back to the start.**
+Both sit beside Cancel. Undo is a grey pill and is faded until something changes. Reset puts the cards back to how the scan first arranged them, and clears a similar-name warning. Neither rewrites saved folder names. The old Reset labels button is gone.
+Why: Undo is the last edit. Reset is "start this scan over." Reset labels rewrote the saved names immediately, which was a different job.
+
+**40. The nav shows one group at a time.**
+Files shows every file. Duplicates, Review, Other, No folder, Large files, and AI guesses each show that group. An AI guess is blue text beside the file name, not part of the name. The mode (Rules only, or Rules + AI) sits at the end of the bar.
+Why: one screen of every card was hard to read. A tab answers "what did the AI do?" without a second list under the cards.
+
+**41. No folder is a real card.**
+It stays on Files even when it is empty, so a file can be dropped in, and it has its own tab. Removing a label sends that label's files there. Approve does not move a file until you place it in a folder.
+Why: removing Work used to hide those files. Every scanned file stays visible.
+
+**42. A file already in the right folder stays on the screen, and Approve leaves it there.**
+Why: the plan skipped those files, so the file count and the chips did not match.
+
+**43. Other notes stay the note from the scan.**
+Moving a file does not replace them with "moved by you." A duplicate still says which copy is kept, where each copy sits, and why this one is the extra. "Last location" sits just above Move to.
+Why: the note is why the file was sorted that way. Replacing it, or leaving a big gap above the menu, made the preview hard to use.
+
+**44. The agent does not open folders you made.**
+It reads only its own folders. An extra duplicate inside one can be offered for Safe to remove, and still waits for Approve. If a rule disagrees with a file you already placed, that is only a suggestion, and it stays put unless you accept it. The AI is not asked about a file that already has a folder.
+Why: those folders are yours. A suggestion that moved on its own was how files ended up somewhere unexpected.
+
+**45. Other is a folder. Review is a holding pile.**
+Other is for notes, data, and records that are understood but are not receipts, school, work, screenshots, installers, archives, or photos. Review is for no matching rule, almost no readable text, or an answer that does not fit the file.
+Why: the two cards looked like the same "not sure" pile.
+
+**46. A similar new label warns you, and is still created.**
+"School work" warns that School is already there, then creates the label. With AI on, it says it is sorting from the new label and sorts again. The exact same name is refused. Reset clears the warning.
+Why: a close name is worth a warning, but blocking it stopped a label you still wanted.
+
+**47. Create label opens one name box.**
+The button is highlighted while the box is open. Enter adds the label, then the box closes. There is no extra hint about pressing Enter.
+Why: a box that stayed filled, plus an Add button and a form hint, was more than the one action.
+
+**48. Large files are a card on their own tab.**
+A file over 100 MB shows there. Set aside is in the preview, and Approve sends ticked ones to Safe to remove with the other chosen moves. The duplicate list under the cards is gone. The Duplicates card and its tab stay.
+Why: the same files were listed twice, once as cards and again as buttons.
+
+**49. After Approve, Undo is always on the done screen and returns to the start.**
+Disk says how much space is filled and how much is free. Battery says Loading, then the percent, or No battery.
+Why: the old Undo asked a second question, and the disk and battery numbers had no plain meaning.
+
+**50. The screen never shows a raw error.**
+A short sentence is shown. The detail goes to app.log.
+Why: a traceback is not something you can decide from.
+
+**51. Delete files removes the whole Safe to remove folder, and keeps a copy to restore.**
+It has its own heading on the done screen, above Disk and Battery. A Yes/No popup asks first. Each file is copied to `C:\LaptopCareTest\undo_deleted`, then removed from the test folder. The button then becomes **Restore deleted files back?**, which puts the folder back.
+Why: you asked for a real delete, but a mistake still has to be fixable. The copies sit outside Downloads, so a scan never sees them.
+
+**52. One Undo, under the green Done bar: "Put every file back?"**
+It looks like a button (blue border, light fill), not a bar. A Yes/No popup asks first. Yes puts back any deleted files first, then reverses this approval's moves, then returns to the start page.
+Why: two Undo buttons were confusing. Restoring deletions first is what stops files getting stuck (see FIXES 16).
+
+**53. Undo and Restore leave nothing behind.**
+After they finish, the copies folder is removed and that run's lines are taken out of `undo.log`. An empty log file is deleted.
+Why: a finished undo should not leave an empty folder or old notes around.
+
+**54. The done bar is a soft green.**
+A light see-through green with dark green text, matching the theme, instead of a bold bar.
+Why: it should say "done" clearly without shouting.
+
+**55. Every message bar has a ✕ to close it.**
+That covers success, info, warning and error bars, including Undone and label warnings. A saved note (like "Undone. Files are back.") is cleared when closed. The folder warnings stay closed for that session.
+Why: a message you have read should not sit on the screen.
+
+**56. Yes closes the popup at once, then the page says Working.**
+Undo, Delete and Restore show a "Working…" spinner while files move.
+Why: a popup that hangs after Yes feels like the click didn't work.

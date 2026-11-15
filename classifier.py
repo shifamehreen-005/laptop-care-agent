@@ -146,6 +146,8 @@ def ask_model(name: str, preview: str) -> tuple[str, str, str]:
             "prompt": prompt,
             "system": "You are a file sorter. You only label files by topic; you never act on them.",
             "stream": False,
+            # Keep the small model in memory between files. Loading it each time is slow.
+            "keep_alive": "30m",
             "format": {
                 "type": "object",
                 "properties": {

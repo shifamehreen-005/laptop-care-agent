@@ -11,3 +11,8 @@ __pycache__/
 
 # IDE
 .vscode/
+
+# Local app state
+app.log
+last_folder.txt
+folders.json
