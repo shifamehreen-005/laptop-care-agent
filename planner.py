@@ -9,7 +9,7 @@ from scanner import scan_folder
 DUPLICATE_FOLDER = "_safe_to_remove"
 
 
-def build_plan(files, use_ai=True, debug=False) -> list[dict]:
+def build_plan(files, use_ai=True, debug=False, model=None, with_reason=True) -> list[dict]:
     """One move action per file that should move. Duplicates go to _safe_to_remove."""
     plan = []
     for file in files:
@@ -33,7 +33,9 @@ def build_plan(files, use_ai=True, debug=False) -> list[dict]:
             if suggestion is not None:
                 plan.append(suggestion)
             continue
-        category, reason, source = classifier.classify(file, use_ai=use_ai)
+        category, reason, source = classifier.classify(
+            file, use_ai=use_ai, model=model, with_reason=with_reason
+        )
         if debug and source == "ai":
             # Show the exact text sent to Ollama and the text it sent back.
             print(f"--- {name} ---")
@@ -127,8 +129,24 @@ def main() -> None:
         action="store_true",
         help="For each AI file, print the prompt sent and the raw answer.",
     )
+    parser.add_argument(
+        "--model",
+        default=None,
+        help=f"Ollama model to ask (default: {classifier.MODEL}).",
+    )
+    parser.add_argument(
+        "--no-reason",
+        action="store_true",
+        help="Ask the model for a category only, without a short reason.",
+    )
     args = parser.parse_args()
-    plan = build_plan(scan_folder(TEST_FOLDER), use_ai=not args.no_ai, debug=args.debug)
+    plan = build_plan(
+        scan_folder(TEST_FOLDER),
+        use_ai=not args.no_ai,
+        debug=args.debug,
+        model=args.model,
+        with_reason=not args.no_reason,
+    )
     print(summary(plan))
     print()
     for action in plan:

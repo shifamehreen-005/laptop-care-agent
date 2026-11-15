@@ -167,7 +167,7 @@ def sha256_file(path: Path) -> str:
 
 def preview_text(path: Path) -> str:
     extension = path.suffix.lower()
-    if extension == ".txt":
+    if extension in {".txt", ".csv"}:
         with path.open("r", encoding="utf-8", errors="replace") as handle:
             return handle.read(PREVIEW_CHARS)
     if extension == ".pdf":

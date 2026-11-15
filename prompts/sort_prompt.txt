@@ -1,0 +1,24 @@
+File name: {name}
+File type: {extension}
+Text (first part of the file):
+"""
+{preview}
+"""
+
+Folders:
+- Receipts: proof that money was paid or is owed: receipts, invoices, bills, order confirmations,
+  payment or subscription confirmations, bank transfer slips. Even if the word "receipt" never appears.
+- School: anything for a class or studying: essays, homework, lecture notes, reading summaries,
+  study guides, lab reports, course schedules.
+- Work: anything for a job or job search: meeting notes, work reports, proposals, cover letters,
+  resumes, job applications, project plans.
+- Other: the topic is clear but fits none of the above: personal letters, travel plans,
+  recipes, data exports, random notes.
+- Review: there is not enough information to tell (empty, unreadable, or only a few vague words).
+
+Examples:
+- "Thanks for your payment of $12.99 for Spotify Premium, November" -> Receipts
+- "Week 3 notes: photosynthesis turns light into sugar. Quiz on Friday." -> School
+- "Attached is my resume for the marketing assistant opening." -> Work
+- "Packing list: passport, charger, sunscreen, flight at 9am." -> Other
+- "asdf 123" -> Review

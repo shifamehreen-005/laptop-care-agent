@@ -255,3 +255,26 @@ Why: a message you have read should not sit on the screen.
 **56. Yes closes the popup at once, then the page says Working.**
 Undo, Delete and Restore show a "Working…" spinner while files move.
 Why: a popup that hangs after Yes feels like the click didn't work.
+
+**57. The cards come from the folder you scan.**
+A saved label (a default like Receipts, or one you made) shows only if files from this folder land in it, or a folder with that name is already there. The rest start hidden but stay in Move to. Moving a file in, or typing that name in Create label, brings the card back, and it stays. Review and Other still open from their tabs.
+Why: a folder of lecture notes showed empty Receipts, Installers and Photos cards, as if every folder were a Downloads folder.
+
+## Evals
+
+**58. The prompt moved to `prompts/sort_prompt.txt`, with a definition per folder and an optional 10-word reason before the category. This replaces 28.**
+"Leases" was left out of Other on purpose: the lease file was one of the two AI mistakes, so naming it would teach to the test. The generated folder has now been seen while writing the prompt, so the real-file set (36) is the honest number.
+Why: the eval needs a prompt worth comparing across models, and the reason shows why a file went where it did.
+
+**59. Eval is read-only and uses the default categories only.**
+It snapshots the folder before and after and reports "Folder unchanged". Results go to `evals/results_<date>.csv` and `.md`, a new name each run, and never inside the tested folder.
+Why: grading must not change what it grades, and old runs are kept for comparison.
+
+**60. Each model is warmed up (not timed), run, then unloaded. Anything already loaded is unloaded first.**
+Why: the first call to a model is the slow load, not its real speed, and 8 GB can't hold two models.
+
+**61. Duplicates are scored once, not per setup.**
+Why: the scanner finds copies by their bytes, so every setup gets the same answer.
+
+**62. Tidy uses the new prompt too, but keeps its 30-second timeout. The eval waits up to 120 seconds.**
+Why: a 3B model can be that slow, but the app shouldn't hang that long per file if Ollama stalls.

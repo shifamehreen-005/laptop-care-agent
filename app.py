@@ -19,6 +19,7 @@ from pathlib import Path
 import streamlit as st
 
 import classifier
+import eval_view
 import executor
 import folders
 import health
@@ -96,6 +97,13 @@ def main() -> None:
     st.set_page_config(layout="wide", page_title="Laptop Care Agent")
     try:
         inject_css()
+        mode = st.sidebar.radio(
+            "Mode", ["Tidy", "Eval"], key="mode", disabled=bool(st.session_state.get("eval_running"))
+        )
+        if mode == "Eval":
+            # The eval loads and unloads each model itself, so no warm-up here.
+            eval_view.show_eval(log_problem, notice, browse_folder)
+            return
         warm_model()
         if not st.session_state.get("folder"):
             st.session_state.folder = load_folder()
@@ -1291,12 +1299,16 @@ def review_counts(plan: list[dict]) -> tuple[int, int]:
         if action.get("destination") == DUPLICATE_FOLDER and not action.get("leave"):
             placed.add(action_id(action))
     loose = sum(1 for action in plan if action_id(action) not in placed)
-    return len(labels), loose
+    return sum(1 for label in labels if label_shown(label, plan, pending)), loose
 
 
 def show_label_grid(plan: list[dict]) -> None:
-    labels = [label for label in (st.session_state.get("labels") or []) if label.get("source") != "suggested"]
+    every = [label for label in (st.session_state.get("labels") or []) if label.get("source") != "suggested"]
     pending = suggested_file_ids()
+    labels = [label for label in every if label_shown(label, plan, pending)]
+    for label in labels:
+        # Once a file goes in, the card stays even if that file leaves again.
+        label.pop("hidden", None)
     cards = []
     # Other, Review, and Duplicates stay together at the end.
     end = []
@@ -1332,7 +1344,12 @@ def show_label_grid(plan: list[dict]) -> None:
     if view == "duplicates":
         cards = [card for card in cards if card[0] == "dupes"] or [("dupes", None, [])]
     elif view in {"Review", "Other"}:
-        cards = [card for card in cards if card[0] == "label" and (card[1] or {}).get("key") == view]
+        # Its own tab shows the card even when it is empty here.
+        cards = [
+            ("label", label, [action for action in plan if on_label(action, label, pending)])
+            for label in every
+            if label.get("key") == view
+        ]
     elif view == "ai":
         cards = ai_guess_cards(plan, labels, pending)
         if not cards:
@@ -2059,13 +2076,39 @@ def prepare_review(
     include_kept_files(files, plan)
     add_disk_labels(files, labels, disk_folders or [])
     attach_labels(plan, labels)
-    if not use_ai:
-        return []
-    records = file_index(files)
-    yours = [label for label in labels if label.get("source") == "yours"]
-    if yours:
-        place_with_yours(plan, records, yours)
-    return suggested_labels(plan, records, labels)
+    suggestions = []
+    if use_ai:
+        records = file_index(files)
+        yours = [label for label in labels if label.get("source") == "yours"]
+        if yours:
+            place_with_yours(plan, records, yours)
+        suggestions = suggested_labels(plan, records, labels)
+    hide_empty_labels(plan, labels, disk_folders or [], suggestions)
+    return suggestions
+
+
+def hide_empty_labels(plan: list[dict], labels: list[dict], disk_folders: list[str], suggestions: list[dict]) -> None:
+    """Cards come from this folder. A saved label with no files here starts hidden.
+
+    It stays in Move to, so it comes back as soon as a file goes in.
+    """
+    on_disk = {name.casefold() for name in disk_folders}
+    pending = {file_id for item in suggestions for file_id in (item.get("file_ids") or [])}
+    for label in labels:
+        if label.get("source") not in {"default", "yours"}:
+            continue
+        if (label.get("name") or "").casefold() in on_disk:
+            continue
+        if not any(on_label(action, label, pending) for action in plan):
+            label["hidden"] = True
+
+
+def label_shown(label: dict, plan: list[dict], pending: set[str]) -> bool:
+    if label.get("source") == "suggested":
+        return False
+    if not label.get("hidden"):
+        return True
+    return any(on_label(action, label, pending) for action in plan)
 
 
 def add_disk_labels(files: list, labels: list[dict], disk_folders: list[str] | None = None) -> None:
@@ -2315,6 +2358,17 @@ def name_words(name: str) -> set[str]:
 
 def add_user_label(name: str, description: str) -> None:
     labels = st.session_state.get("labels") or []
+    wanted = (name or "").strip().casefold()
+    hidden = next(
+        (label for label in labels if label.get("hidden") and (label.get("name") or "").casefold() == wanted),
+        None,
+    )
+    if hidden is not None:
+        remember_review()
+        hidden.pop("hidden", None)
+        st.session_state.clear_new_name = True
+        st.session_state.show_create = False
+        st.rerun()
     error = folders.validate_name(name, labels)
     if error:
         notice("warning", error)
@@ -2541,6 +2595,7 @@ def labels_to_keep(labels: list[dict]) -> list[dict]:
         if label.get("source") in {"suggested", "disk"}:
             continue
         item = dict(label)
+        item.pop("hidden", None)
         if item.get("source") == "yours":
             item["approved"] = True
         kept.append(item)

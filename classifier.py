@@ -7,12 +7,23 @@ import json
 import re
 import urllib.error
 import urllib.request
+from pathlib import Path
 
+import config
 from config import CATEGORIES
 
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
-MODEL = "llama3.2:1b"
+MODEL = config.DEFAULT_MODEL
 TIMEOUT_SECONDS = 30
+# 3B models can take this long on a slow laptop. The eval passes it; the app keeps 30.
+SLOW_TIMEOUT_SECONDS = 120
+PROMPT_FILE = Path(__file__).resolve().parent / "prompts" / "sort_prompt.txt"
+SYSTEM_MESSAGE = (
+    "You sort files on a personal laptop into folders. You only choose a folder name; you never open, "
+    "change or judge files. Decide by what the file is FOR, not by single words in it. "
+    "Answer only in the JSON format given."
+)
+REASON_WORDS = 10
 
 # Checked in this order. The first match wins.
 EXTENSION_RULES = {
@@ -34,7 +45,7 @@ KEYWORD_RULES = (
 AI_CHOICES = ("Receipts", "School", "Work", "Other", "Review")
 last_prompt = ""
 last_raw = ""
-# One line each, so the small model knows what the words mean.
+# Shown on the app's folder cards. The model reads prompts/sort_prompt.txt instead.
 CATEGORY_DESCRIPTIONS = {
     "Receipts": "invoices, receipts, and orders",
     "School": "lectures, assignments, syllabi, and homework",
@@ -56,8 +67,10 @@ AI_EXTENSIONS = {
 }
 
 
-def classify(file, use_ai=True) -> tuple[str, str, str]:
-    """Return (category, reason, source). source is "rule" or "ai"."""
+def classify(
+    file, use_ai=True, model=None, with_reason=True, timeout=TIMEOUT_SECONDS
+) -> tuple[str, str, str]:
+    """Return (category, reason, source). source is "rule" or "ai". model=None means MODEL."""
     ruled = rule_category(file)
     if ruled is not None:
         return ruled
@@ -67,8 +80,10 @@ def classify(file, use_ai=True) -> tuple[str, str, str]:
     preview = file.get("preview_text") or ""
     if len(preview.strip()) < 20:
         return "Review", "no readable text", "rule"
-    category, reason, source = ask_model(file.get("name") or "", preview)
     extension = file_extension(file)
+    category, reason, source = ask_model(
+        file.get("name") or "", preview, extension, model=model, with_reason=with_reason, timeout=timeout
+    )
     # A .docx cannot be a photo. School, Work, Receipts, Other, and Review stay as answered.
     if not ai_answer_fits(category, extension):
         return "Review", f"model said {category!r}, which doesn't fit {extension} -> Review", "ai"
@@ -116,48 +131,48 @@ def ai_answer_fits(category: str, extension: str) -> bool:
     return extension in allowed
 
 
-def ask_model(name: str, preview: str) -> tuple[str, str, str]:
-    # The model only sees the name and the preview, not the path or the hash.
+def build_prompt(name: str, preview: str, extension: str, with_reason: bool) -> str:
+    # The model only sees the name, type and preview, not the path or the hash.
+    template = PROMPT_FILE.read_text(encoding="utf-8")
+    prompt = template.format(name=name, extension=extension or "unknown", preview=preview.strip())
+    if with_reason:
+        answer = '{"reason": "<at most 10 words>", "category": "<folder>"}'
+    else:
+        answer = '{"category": "<folder>"}'
+    return f"{prompt.rstrip()}\n\nAnswer in JSON: {answer}\n"
+
+
+def answer_schema(with_reason: bool) -> dict:
+    category = {"type": "string", "enum": list(AI_CHOICES)}
+    if not with_reason:
+        return {"type": "object", "properties": {"category": category}, "required": ["category"]}
+    # Reason comes first so the model explains before it picks.
+    return {
+        "type": "object",
+        "properties": {"reason": {"type": "string", "maxLength": 80}, "category": category},
+        "required": ["reason", "category"],
+    }
+
+
+def ask_model(
+    name: str, preview: str, extension: str = "", model=None, with_reason=True, timeout=TIMEOUT_SECONDS
+) -> tuple[str, str, str]:
     global last_prompt, last_raw
-    descriptions = "\n".join(
-        f"{category}: {CATEGORY_DESCRIPTIONS[category]}" for category in AI_CHOICES if category != "Review"
-    )
-    prompt = (
-        f"File name: {name}\n"
-        f"Text: {preview}\n"
-        "\n"
-        "Which category is this file? If unsure, answer Review.\n"
-        "\n"
-        "Allowed answers:\n"
-        f"{descriptions}\n"
-        "Review\n"
-        "\n"
-        "A payment confirmation -> Receipts\n"
-        "An essay -> School\n"
-        "A cover letter -> Work\n"
-        "A note with no clear topic -> Other\n"
-        "A lease or personal record -> Other\n"
-    )
+    try:
+        prompt = build_prompt(name, preview, extension, with_reason)
+    except (OSError, KeyError, IndexError, ValueError):
+        return "Review", "the prompt file couldn't be read", "ai"
     last_prompt = prompt
     last_raw = ""
     body = json.dumps(
         {
-            "model": MODEL,
+            "model": model or MODEL,
             "prompt": prompt,
-            "system": "You are a file sorter. You only label files by topic; you never act on them.",
+            "system": SYSTEM_MESSAGE,
             "stream": False,
-            # Keep the small model in memory between files. Loading it each time is slow.
+            # Keep the model in memory between files. Loading it each time is slow.
             "keep_alive": "30m",
-            "format": {
-                "type": "object",
-                "properties": {
-                    "category": {
-                        "type": "string",
-                        "enum": list(AI_CHOICES),
-                    }
-                },
-                "required": ["category"],
-            },
+            "format": answer_schema(with_reason),
             "options": {"temperature": 0},
         }
     ).encode("utf-8")
@@ -167,27 +182,34 @@ def ask_model(name: str, preview: str) -> tuple[str, str, str]:
         headers={"Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError) as err:
         return "Review", f"Ollama did not answer ({err.__class__.__name__})", "ai"
+    if not isinstance(payload, dict):
+        return "Review", "Ollama did not answer (unexpected reply)", "ai"
     raw = str(payload.get("response") or "").strip()
     last_raw = raw
-    category = category_from_json(raw)
+    category, why = answer_from_json(raw)
     if category is None:
         return "Review", f"model said {raw!r} -> Review", "ai"
+    if why:
+        return category, f"ai: {why}", "ai"
     return category, f"model said {category!r}", "ai"
 
 
-def category_from_json(raw: str) -> str | None:
-    """Read category from the JSON object the schema asked for."""
+def answer_from_json(raw: str) -> tuple[str | None, str]:
+    """Read category and reason from the JSON object the schema asked for."""
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
-        return None
+        return None, ""
     if not isinstance(data, dict):
-        return None
+        return None, ""
     category = data.get("category")
-    if category in AI_CHOICES:
-        return category
-    return None
+    if category not in AI_CHOICES:
+        return None, ""
+    words = str(data.get("reason") or "").split()
+    return category, " ".join(words[:REASON_WORDS])
+
+

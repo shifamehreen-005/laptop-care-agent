@@ -3,6 +3,7 @@
 Usage:
     python make_test_folder.py
     python make_test_folder.py --count 120 --seed 42
+    python make_test_folder.py --count 120 --hard 30 --seed 42
 """
 
 import argparse
@@ -17,7 +18,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
 
+import classifier
 from config import CATEGORIES, TEST_FOLDER
+from scanner import PREVIEW_CHARS
 
 # Shares of the whole batch. They sum to 100 so any --count keeps this mix.
 # 8 means 4 copies in 50 files and 10 copies in 120.
@@ -112,6 +115,8 @@ class Planned(NamedTuple):
     category: str
     when: datetime
     source: str | None = None
+    difficulty: str = "normal"
+    body: str | None = None
 
 
 def die(message: str) -> None:
@@ -169,6 +174,11 @@ def two_years_ago(now: datetime) -> datetime:
         return now.replace(year=now.year - 2, day=28)
 
 
+def real_local_time(when: datetime) -> datetime:
+    # Spring-forward skips an hour (e.g. 2:56 AM). Windows can't store that, so use the real clock.
+    return datetime.fromtimestamp(when.timestamp())
+
+
 def make_dates(count: int, rng: random.Random) -> list[datetime]:
     # Fixed clock so the same --seed rebuilds the same timestamps, not a new set each day.
     # Even slots across two years, then shuffle, so dates are not grouped by type.
@@ -180,7 +190,7 @@ def make_dates(count: int, rng: random.Random) -> list[datetime]:
     for index in range(count):
         base = span * (index + 0.5) / count
         offset = min(span, max(0, base + rng.uniform(-half_slot, half_slot)))
-        dates.append(start + timedelta(seconds=offset))
+        dates.append(real_local_time(start + timedelta(seconds=offset)))
     rng.shuffle(dates)
     return dates
 
@@ -208,7 +218,7 @@ def typo_plans(rng: random.Random, plans: list[Planned]) -> list[Planned]:
     now = datetime(2026, 11, 13, 12, 0, 0)
     start = two_years_ago(now)
     span = (now - start).total_seconds()
-    homework_when = start + timedelta(seconds=rng.uniform(0, span))
+    homework_when = real_local_time(start + timedelta(seconds=rng.uniform(0, span)))
     return [
         Planned("inovice_march.pdf", "Receipts", invoice.when, "invoice.pdf"),
         Planned("homewrok.docx", "School", homework_when),
@@ -275,6 +285,218 @@ HARD_FILES = (
 )
 HARD_TEXT = {name: text for name, _category, text in HARD_FILES}
 
+# Fixed set of 30 extra hard files. Same seed only changes dates, not names or wording.
+# Meaning sits in the first PREVIEW_CHARS. No rule keywords. No sort-prompt examples.
+EXTRA_HARD_FILES = (
+    # Receipts — 6 clear, 2 edge
+    (
+        "scan_0107.pdf",
+        "Receipts",
+        "clear",
+        "PHONE BILL\nPaid in full for line ending 4821.\nAmount 64.20. Card charged today.\nThank you for staying with Metro Mobile.\n",
+    ),
+    (
+        "doc2.docx",
+        "Receipts",
+        "clear",
+        "PARKING TICKET\nCity garage stall B-12.\nYou paid 18.00 at the machine.\nKeep this slip with your car papers.\n",
+    ),
+    (
+        "untitled_4.txt",
+        "Receipts",
+        "clear",
+        "GYM RENEWAL\nYour City Fit plan renews for another month.\nWe charged 39.00. Access stays active.\n",
+    ),
+    (
+        "file (5).docx",
+        "Receipts",
+        "clear",
+        "REFUND ISSUED\nStore credit back to your card ending 2219.\nAmount 27.45 for the returned shoes.\nAllow 3 days to show on your bank page.\n",
+    ),
+    (
+        "notes_8.pdf",
+        "Receipts",
+        "clear",
+        "RENT PAID\nBank transfer sent to Oak Street Management.\n1450.00 for Unit 4B, March.\nConfirmation code TX-88341.\n",
+    ),
+    (
+        "export_9.csv",
+        "Receipts",
+        "clear",
+        "date,merchant,amount,status\n2025-09-01,Metro Mobile,-64.20,posted\n2025-09-02,City Garage,-18.00,posted\n2025-09-03,City Fit,-39.00,posted\n",
+    ),
+    (
+        "scan_0112.pdf",
+        "Receipts",
+        "edge",
+        "TUITION PAYMENT\nState College bursar.\nYou paid 820.00 toward fall fees.\nThis is money paid, not class notes.\n",
+    ),
+    (
+        "doc7.txt",
+        "Receipts",
+        "edge",
+        "CAR REPAIR PAID\nHarbor Auto finished the brake work.\nTotal 310.00 charged to your card.\nA shop bill can look like a work note; this one is proof of payment.\n",
+    ),
+    # School — 5 clear, 3 edge
+    (
+        "file_12.docx",
+        "School",
+        "clear",
+        "CLASS TIMETABLE\nMon Biology lab 9:00\nWed History seminar 11:00\nFri quiz review 14:00\nRoom numbers on the board.\n",
+    ),
+    (
+        "scan_0201.pdf",
+        "School",
+        "clear",
+        "EXAM STUDY GUIDE\nChapter 4: cell parts and energy.\nKnow the diagram of the leaf.\nPractice the short-answer list before Friday.\n",
+    ),
+    (
+        "untitled_11.txt",
+        "School",
+        "clear",
+        "GROUP PROJECT NOTES\nWe split the poster: maps, timeline, conclusion.\nSam brings printouts. I write the intro.\nDue in the Friday class tray.\n",
+    ),
+    (
+        "doc15.docx",
+        "School",
+        "clear",
+        "ESSAY DRAFT\nRome's roads slowed trade before the empire split.\nLocal leaders took charge of towns.\nThis draft is for World History.\n",
+    ),
+    (
+        "grades_3.csv",
+        "School",
+        "clear",
+        "course,task,score\nBiology 101,quiz 1,88\nWorld History,essay 1,91\nAlgebra II,quiz 2,84\n",
+    ),
+    (
+        "scan_0208.pdf",
+        "School",
+        "edge",
+        "FROM: Prof. Nguyen\nSubject: Friday quiz reminder\nBring a pencil and your ID.\nThe quiz covers chapters 2 and 3 only.\nA teacher email can look personal; this one is for class.\n",
+    ),
+    (
+        "list_4.txt",
+        "School",
+        "edge",
+        "READING LIST\n1. The Warming Earth, ch. 2\n2. Ice core article in the packet\n3. Short film link on the course page\nMark pages before the seminar.\n",
+    ),
+    (
+        "lab_writeup.docx",
+        "School",
+        "edge",
+        "LAB RESULTS WRITE-UP\nTrial A grew faster under the lamp.\nTrial B stayed pale without light.\nConclusion: light mattered more than water this week.\n",
+    ),
+    # Work — 5 clear, 3 edge
+    (
+        "doc21.pdf",
+        "Work",
+        "clear",
+        "JOB OFFER\nHarbor Transit is pleased to offer you the junior analyst role.\nStart date 2 June. Salary in the attached letter.\nReply to people@harbortransit.example if you accept.\n",
+    ),
+    (
+        "untitled_18.txt",
+        "Work",
+        "clear",
+        "ONBOARDING CHECKLIST\n[ ] Badge photo\n[ ] Laptop pickup\n[ ] Benefits form\nBring ID on day one at the downtown office.\n",
+    ),
+    (
+        "standup_2.docx",
+        "Work",
+        "clear",
+        "TEAM STANDUP NOTES\nAlex: finishing the dashboard filters.\nSam: waiting on design review.\nNext: ship the quiet Friday build.\n",
+    ),
+    (
+        "draft_6.txt",
+        "Work",
+        "clear",
+        "CLIENT EMAIL DRAFT\nHi Maya,\nHere is the revised timeline for the website refresh.\nPlease confirm the Friday check-in still works.\nThanks, Sam\n",
+    ),
+    (
+        "sales_q3.csv",
+        "Work",
+        "clear",
+        "month,region,units,revenue\nJuly,East,120,8400\nAugust,East,132,9240\nSeptember,West,101,7070\n",
+    ),
+    (
+        "scan_0303.pdf",
+        "Work",
+        "edge",
+        "PERFORMANCE REVIEW NOTES\nStrengths: clear writing, calm under pressure.\nGrow: ask for help earlier on blockers.\nManager sign-off due next Wednesday.\n",
+    ),
+    (
+        "file (9).docx",
+        "Work",
+        "edge",
+        "WORK TRIP ITINERARY\nMon fly to Chicago for the client walkthrough.\nTue on-site day with the Harbor Transit team.\nWed return flight.\nCompany travel, not a vacation plan.\n",
+    ),
+    (
+        "prep_4.txt",
+        "Work",
+        "edge",
+        "INTERVIEW PREP NOTES\nRole: junior analyst at Harbor Transit.\nStories: spreadsheet cleanup, calm client call.\nQuestions to ask about the team tools.\n",
+    ),
+    # Other — 4 clear, 2 edge
+    (
+        "scan_0401.pdf",
+        "Other",
+        "clear",
+        "WEDDING INVITATION\nPlease join Sam and Alex on 12 July 2026.\nGarden ceremony at 4 pm, dinner after.\nRSVP by 1 June.\n",
+    ),
+    (
+        "recipe_2.txt",
+        "Other",
+        "clear",
+        "TOMATO PASTA\nBoil noodles. Warm garlic in oil.\nAdd tomatoes and salt. Toss and serve.\nFeeds two.\n",
+    ),
+    (
+        "budget_home.csv",
+        "Other",
+        "clear",
+        "item,planned,spent\ngroceries,400,380\ntransit,120,115\nfun,80,90\n",
+    ),
+    (
+        "party_ideas.docx",
+        "Other",
+        "clear",
+        "BIRTHDAY PARTY IDEAS\nPark picnic, simple cake, playlist.\nGuests bring a favorite snack.\nKeep it under two hours.\n",
+    ),
+    (
+        "scan_0409.pdf",
+        "Other",
+        "edge",
+        "APARTMENT LEASE RENEWAL\nUnit 4B, 18 Oak Street.\nNew term: 1 August 2026 to 31 July 2027.\nSame rent. Sign and return to the office.\nA lease is a personal record, not a payment slip.\n",
+    ),
+    (
+        "trip_3.txt",
+        "Other",
+        "edge",
+        "TRAVEL ITINERARY\nSat flight 9:10 to Denver.\nHotel near the museum. Sunday hike.\nPersonal trip, not a company visit.\n",
+    ),
+)
+
+# Sort-prompt examples must not appear in the extra hard set.
+PROMPT_EXAMPLE_BANS = ("spotify", "photosynthesis", "resume", "packing list")
+
+
+def rule_keywords() -> tuple[str, ...]:
+    words = []
+    for _category, keywords in classifier.KEYWORD_RULES:
+        words.extend(keywords)
+    return tuple(words)
+
+
+def assert_no_rule_keywords(name: str, text: str) -> None:
+    """Stop if a rule keyword or sort-prompt example slipped into a hard file."""
+    for keyword in rule_keywords():
+        if classifier.contains_keyword(name, keyword) or classifier.contains_keyword(text, keyword):
+            die(f"Rule keyword {keyword!r} found in hard file {name}.")
+    lowered = f"{name}\n{text}".lower()
+    for banned in PROMPT_EXAMPLE_BANS:
+        if banned in lowered:
+            die(f"Sort-prompt example {banned!r} found in hard file {name}.")
+    if len(text) > PREVIEW_CHARS:
+        die(f"Hard file {name} text is longer than the {PREVIEW_CHARS}-character preview.")
+
 
 def hard_plans(rng: random.Random) -> list[Planned]:
     now = datetime(2026, 11, 13, 12, 0, 0)
@@ -282,8 +504,28 @@ def hard_plans(rng: random.Random) -> list[Planned]:
     span = (now - start).total_seconds()
     plans = []
     for name, category, _text in HARD_FILES:
-        when = start + timedelta(seconds=rng.uniform(0, span))
-        plans.append(Planned(name, category, when))
+        when = real_local_time(start + timedelta(seconds=rng.uniform(0, span)))
+        plans.append(Planned(name, category, when, difficulty="normal"))
+    return plans
+
+
+def extra_hard_plans(rng: random.Random, used: set[str]) -> list[Planned]:
+    """Thirty new hard files on top of today's five. Same seed rebuilds the same set."""
+    now = datetime(2026, 11, 13, 12, 0, 0)
+    start = two_years_ago(now)
+    span = (now - start).total_seconds()
+    plans = []
+    for name, category, difficulty, text in EXTRA_HARD_FILES:
+        assert_no_rule_keywords(name, text)
+        if name in used:
+            die(f"Hard file name already used: {name}")
+        used.add(name)
+        when = real_local_time(start + timedelta(seconds=rng.uniform(0, span)))
+        plans.append(Planned(name, category, when, difficulty=difficulty, body=text))
+    clear = sum(1 for item in plans if item.difficulty == "clear")
+    edge = sum(1 for item in plans if item.difficulty == "edge")
+    if len(plans) != 30 or clear != 20 or edge != 10:
+        die(f"EXTRA_HARD_FILES must be 30 files (20 clear, 10 edge); got {len(plans)} clear={clear} edge={edge}.")
     return plans
 
 
@@ -469,7 +711,8 @@ def set_file_times(path: Path, when: datetime) -> None:
     finally:
         kernel32.CloseHandle(handle)
     info = path.stat()
-    want = when.strftime("%Y-%m-%d %H:%M")
+    # Compare the round-tripped local time, so a spring-forward hour isn't treated as a failure.
+    want = real_local_time(when).strftime("%Y-%m-%d %H:%M")
     birth = getattr(info, "st_birthtime", None)
     if not birth:
         die(f"Windows did not keep a created date for {path.name}.")
@@ -845,17 +1088,30 @@ def work_text(index: int) -> str:
     )
 
 
+def write_by_suffix(path: Path, text: str) -> None:
+    extension = path.suffix.lower()
+    if extension == ".pdf":
+        write_pdf(path, text)
+    elif extension == ".docx":
+        write_docx(path, text)
+    elif extension in {".txt", ".csv"}:
+        path.write_text(text, encoding="utf-8")
+    else:
+        die(f"No hard-file writer for {extension}")
+
+
 def write_unique(path: Path, item: Planned, ordinal: dict[str, int], seed: int) -> None:
     # These files use their own wording so the usual templates do not add rule keywords.
     if item.name == "old_game_setup.exe":
         write_large_installer(path)
         return
+    if item.body is not None:
+        assert_no_rule_keywords(item.name, item.body)
+        write_by_suffix(path, item.body)
+        return
     if item.name in HARD_TEXT:
         text = HARD_TEXT[item.name]
-        if path.suffix.lower() == ".pdf":
-            write_pdf(path, text)
-        else:
-            write_docx(path, text)
+        write_by_suffix(path, text)
         return
     ordinal[item.category] = ordinal.get(item.category, 0)
     index = ordinal[item.category]
@@ -903,9 +1159,9 @@ def write_labels(path: Path, plans: list[Planned]) -> None:
     # Beside the test folder, not inside it, so the answer key is not one of the downloads.
     with path.open("x", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["filename", "true_category", "is_duplicate"])
+        writer.writerow(["filename", "true_category", "is_duplicate", "difficulty"])
         for item in plans:
-            writer.writerow([item.name, item.category, duplicate_label(item)])
+            writer.writerow([item.name, item.category, duplicate_label(item), item.difficulty])
 
 
 def duplicate_label(item: Planned) -> str:
@@ -962,9 +1218,17 @@ def parse_args() -> argparse.Namespace:
         default=42,
         help="Random seed (default: 42). The same seed rebuilds the same folder.",
     )
+    parser.add_argument(
+        "--hard",
+        type=int,
+        default=5,
+        help="Hard files: 5 = today's set (default). 30 = today's set plus 30 new hard files.",
+    )
     args = parser.parse_args()
     if args.count < 1:
         die("--count must be at least 1.")
+    if args.hard not in {5, 30}:
+        die("--hard must be 5 or 30.")
     return args
 
 
@@ -993,6 +1257,9 @@ def main() -> None:
         die("Planned file count does not match --count.")
     plans.extend(typo_plans(rng, plans))
     plans.extend(hard_plans(rng))
+    if args.hard == 30:
+        used = {item.name for item in plans}
+        plans.extend(extra_hard_plans(rng, used))
     # Extra on purpose, so --count stays the mixed set and this file is always there.
     plans.append(Planned("old_game_setup.exe", "Installers", datetime(2026, 1, 15, 10, 0, 0)))
     folder.mkdir(parents=True, exist_ok=True)

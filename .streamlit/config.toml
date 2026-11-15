@@ -1,6 +1,11 @@
 [server]
 address = "localhost"
 
+# Hide Streamlit's built-in table export (it names files in UTC like 2026-11-15T22-49_export.csv).
+# Eval uses its own Download buttons with local-time names like results_2026-11-15_174150.csv.
+[client]
+disableDataExport = true
+
 [theme]
 base = "light"
 backgroundColor = "#FAFAFA"
