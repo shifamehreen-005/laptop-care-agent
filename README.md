@@ -144,7 +144,7 @@ Duplicates have identical contents, whatever their names. In each group:
 | `tests/` | Undo, eval, hard-file and Ask tests |
 | [`DECISIONS.md`](DECISIONS.md) | Why it works this way |
 | [`FIXES.md`](FIXES.md) | Bugs found and how they were fixed |
-| [`ideas.md`](ideas.md) | Future work |
+| [`IDEAS.md`](IDEAS.md) | Future work |
 
 ## Status
 
@@ -159,6 +159,6 @@ Duplicates have identical contents, whatever their names. In each group:
 
 ## Built with
 
-Python · Streamlit · Ollama (llama3.2:1b and 3b, qwen2.5:3b) · pypdf · python-docx · pytest
+Python · Streamlit · Ollama (llama3.2:1b and 3b, qwen2.5:3b) · pypdf · python-docx · pytest · Cursor · Claude
 
-Built with help from AI coding tools. Every design choice is written down in `DECISIONS.md`.
+Every design choice is written down in [DECISIONS.md](DECISIONS.md). Bugs and how they were fixed are in [FIXES.md](FIXES.md). Ideas not built yet are in [IDEAS.md](IDEAS.md).
