@@ -165,19 +165,61 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+# These are not text. Everything else is opened as text so the agent can read inside.
+BINARY_TYPES = {
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tif", ".tiff", ".heic", ".heif",
+    ".mp4", ".mkv", ".mov", ".avi", ".mp3", ".wav", ".flac",
+    ".zip", ".rar", ".7z", ".exe", ".msi", ".dll", ".bin",
+}
+
+
+def text_sample(path: Path) -> str:
+    """Start, middle, and end of a file. Used by Ask an agent, not by the normal scan."""
+    extension = path.suffix.lower()
+    if extension in BINARY_TYPES:
+        return ""
+    if extension == ".pdf":
+        raw = pdf_preview(path, limit=2000)
+    elif extension == ".docx":
+        raw = docx_preview(path, limit=2000)
+    else:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            raw = handle.read(8000)
+        if "\x00" in raw:
+            return ""
+    return windows(raw)
+
+
+def windows(text: str) -> str:
+    """Three short slices. The topic is often a heading, a middle paragraph, or a closing line."""
+    words = " ".join((text or "").split())
+    if len(words) <= 500:
+        return words
+    middle = max(0, len(words) // 2 - 70)
+    return (
+        f"start: {words[:220]} | "
+        f"mid: {words[middle:middle + 140]} | "
+        f"end: {words[-160:]}"
+    )
+
+
 def preview_text(path: Path) -> str:
     extension = path.suffix.lower()
-    if extension in {".txt", ".csv"}:
-        with path.open("r", encoding="utf-8", errors="replace") as handle:
-            return handle.read(PREVIEW_CHARS)
     if extension == ".pdf":
         return pdf_preview(path)
     if extension == ".docx":
         return docx_preview(path)
-    return ""
+    if extension in BINARY_TYPES:
+        return ""
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        text = handle.read(PREVIEW_CHARS)
+    # A stray binary file is full of nulls. Skip it instead of sending garbage.
+    if "\x00" in text:
+        return ""
+    return text
 
 
-def pdf_preview(path: Path) -> str:
+def pdf_preview(path: Path, limit: int = PREVIEW_CHARS) -> str:
     from pypdf import PdfReader
 
     reader = PdfReader(str(path))
@@ -187,17 +229,17 @@ def pdf_preview(path: Path) -> str:
         piece = page.extract_text() or ""
         parts.append(piece)
         total += len(piece)
-        if total >= PREVIEW_CHARS:
+        if total >= limit:
             break
-    return "".join(parts)[:PREVIEW_CHARS]
+    return "".join(parts)[:limit]
 
 
-def docx_preview(path: Path) -> str:
+def docx_preview(path: Path, limit: int = PREVIEW_CHARS) -> str:
     from docx import Document
 
     document = Document(str(path))
     text = "\n".join(paragraph.text for paragraph in document.paragraphs)
-    return text[:PREVIEW_CHARS]
+    return text[:limit]
 
 
 def arrival_time(info) -> str:

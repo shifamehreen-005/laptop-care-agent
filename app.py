@@ -18,6 +18,7 @@ from pathlib import Path
 
 import streamlit as st
 
+import ask_agent
 import classifier
 import eval_view
 import executor
@@ -25,7 +26,7 @@ import folders
 import health
 import safety
 import scanner
-from config import LARGE_FILE_MB, TEST_FOLDER
+from config import ASK_MODEL, DEFAULT_MODEL, LARGE_FILE_MB, MODELS, TEST_FOLDER
 from planner import DUPLICATE_FOLDER, build_plan
 
 
@@ -918,8 +919,22 @@ def show_start() -> None:
     else:
         understood = True
     st.toggle("Use AI for unclear files", value=True, key="use_ai")
+    st.selectbox("Model", MODELS, index=MODELS.index(DEFAULT_MODEL), key="scan_model")
+    st.toggle(
+        "Ask an agent",
+        value=bool(st.session_state.get("ask_agent", False)),
+        key="ask_agent",
+        help="The scan stays the same. A question after that uses qwen2.5:3b.",
+    )
+    if st.session_state.get("ask_agent"):
+        st.caption("The scan is unchanged. Ask a question and qwen2.5:3b sorts from that.")
     if st.button("Scan", key="scan", disabled=not (ok and understood)):
-        run_scan(st.session_state.folder, bool(st.session_state.get("use_ai", True)))
+        run_scan(
+            st.session_state.folder,
+            bool(st.session_state.get("use_ai", True)),
+            ask_on=bool(st.session_state.get("ask_agent")),
+            model=st.session_state.get("scan_model") or DEFAULT_MODEL,
+        )
 
 
 def load_folder() -> str:
@@ -969,20 +984,28 @@ def is_test_folder(folder: str) -> bool:
         return False
 
 
-def run_scan(folder: str, use_ai: bool) -> None:
+def run_scan(folder: str, use_ai: bool, ask_on: bool = False, model: str = "") -> None:
     st.session_state.ai_note = ""
     st.session_state.skipped = []
+    st.session_state.ask_note = ""
     started = time.perf_counter()
     try:
         with st.spinner("Scanning..."):
+            # One model in memory. A leftover Qwen makes a normal scan wait.
+            # Ask an agent does not sort during the scan. It waits for a question.
+            if use_ai:
+                keep_only(model or DEFAULT_MODEL)
+            else:
+                keep_only("")
             files, skipped, disk_folders = collect_scan(folder)
             ai_note = ""
             if use_ai and not ollama_running():
                 use_ai = False
                 ai_note = AI_OFF
-            plan = build_plan(files, use_ai=use_ai)
+            plan = build_plan(files, use_ai=use_ai, model=model or DEFAULT_MODEL)
             labels = load_review_labels()
             suggestions = prepare_review(files, plan, labels, use_ai, disk_folders)
+            ask_note = ""
     except ScanStop as err:
         if err.warning:
             notice("warning", str(err))
@@ -998,10 +1021,15 @@ def run_scan(folder: str, use_ai: bool) -> None:
     st.session_state.plan = plan
     st.session_state.labels = labels
     st.session_state.suggestions = suggestions
-    st.session_state.scan_mode = "Rules + AI" if use_ai else "Rules only"
+    if use_ai:
+        st.session_state.scan_mode = f"Rules + {model or DEFAULT_MODEL}"
+    else:
+        st.session_state.scan_mode = "Rules only"
+    st.session_state.ask_mode = ask_on
     st.session_state.selected = ""
     st.session_state.skipped = skipped
     st.session_state.ai_note = ai_note
+    st.session_state.ask_note = ask_note
     st.session_state.duplicates_found = sum(1 for item in files if item.get("is_duplicate"))
     st.session_state.large_found = sum(
         1 for item in files if (item.get("size_bytes") or 0) > LARGE_FILE_MB * 1_048_576
@@ -1141,6 +1169,8 @@ def show_plan() -> None:
     install_drag()
     st.markdown('<h1 class="app-title">Laptop Care Agent</h1>', unsafe_allow_html=True)
     show_review_bar(plan)
+    if st.session_state.get("ask_mode"):
+        show_ask_box()
     show_file_nav(files, plan)
     show_add_row(plan)
     show_scan_notes()
@@ -1150,6 +1180,67 @@ def show_plan() -> None:
         show_review_lists(plan)
     with side:
         show_details(plan)
+
+
+def show_ask_box() -> None:
+    """Ask how to sort. Samples cover type, subject, and semester."""
+    st.subheader("Ask an agent")
+    note = st.session_state.get("ask_note") or ""
+    if note:
+        st.caption(note)
+    with st.container(horizontal=True, gap="small", vertical_alignment="center"):
+        ask = st.text_input(
+            "Ask",
+            key="ask_text",
+            label_visibility="collapsed",
+            placeholder="How should these files be sorted?",
+        )
+        go = st.button("Ask", key="ask_go", type="primary")
+    st.caption("Try one of these:")
+    with st.container(horizontal=True, gap="small"):
+        for sample in ask_agent.SAMPLES:
+            if st.button(sample, key=widget_key("ask_sample", sample)):
+                run_ask(sample)
+                return
+    if go:
+        run_ask(ask)
+
+
+def run_ask(ask: str) -> None:
+    text = (ask or "").strip()
+    if not text:
+        notice("warning", "Type what you want, or tap a sample.")
+        return
+    remember_review()
+    plan = copy.deepcopy(st.session_state.get("plan") or [])
+    files = st.session_state.get("files") or []
+    mode = ask_agent.pick_mode(text)
+    named = None
+    with st.spinner("Working…"):
+        if mode == "judge":
+            if not ollama_running():
+                notice("warning", "Ollama isn't running. Start it, or use Group by file type.")
+                return
+            named = judge_names(files, plan, text)
+        labels, plan, note = ask_agent.apply_ask(
+            plan,
+            files,
+            text,
+            name_for_file=(
+                None
+                if named is None
+                else lambda record: named.get(
+                    f"{record.get('folder') or ''}/{record.get('name') or ''}", ""
+                )
+            ),
+        )
+    st.session_state.labels = labels
+    st.session_state.plan = plan
+    st.session_state.suggestions = []
+    st.session_state.ask_note = note
+    st.session_state.labels_dirty = True
+    clear_move_keys()
+    st.rerun()
 
 
 def show_review_bar(plan: list[dict]) -> None:
@@ -2182,6 +2273,9 @@ def place_with_yours(plan: list[dict], records: dict, yours: list[dict]) -> None
         if not waiting_for_label(action):
             continue
         record = records.get(action_id(action)) or {}
+        # Code and web files stay put on a normal scan. Asking the model once per file is slow.
+        if (record.get("extension") or "").lower() in classifier.SKIP_AI:
+            continue
         try:
             choice = ask_label(record, yours)
         except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError, ValueError) as err:
@@ -2207,6 +2301,8 @@ def suggested_labels(plan: list[dict], records: dict, labels: list[dict]) -> lis
         if not waiting_for_label(action):
             continue
         record = records.get(action_id(action)) or {}
+        if (record.get("extension") or "").lower() in classifier.SKIP_AI:
+            continue
         try:
             raw = ask_short_name(record)
         except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError, ValueError) as err:
@@ -2286,16 +2382,196 @@ def ask_short_name(record: dict) -> str:
     return str(data.get("folder_name") or "")
 
 
-def ask_json(prompt: str, schema: dict) -> dict | None:
+def judge_names(files: list[dict], plan: list[dict], ask: str) -> dict:
+    """Rules place the obvious files. Qwen invents folders for the rest."""
+    records = {f"{item.get('folder') or ''}/{item.get('name') or ''}": item for item in files}
+    pending = [
+        records.get(f"{action.get('folder') or ''}/{action.get('name') or ''}") or {}
+        for action in plan
+        if action.get("destination") != DUPLICATE_FOLDER
+    ]
+    pending = [record for record in pending if record]
+    found = {}
+    leftovers = []
+    for record in pending:
+        ruled = classifier.rule_category(record)
+        key = f"{record.get('folder') or ''}/{record.get('name') or ''}"
+        if ruled is not None:
+            found[key] = ruled[0]
+        else:
+            leftovers.append(record)
+    if not leftovers:
+        return found
+    # Two models at once on 8 GB makes every call wait. Keep only Qwen.
+    free_for_ask()
+    folders = invent_folders(leftovers, ask)
+    if "Other" not in folders:
+        folders.append("Other")
+    allowed = {name.casefold(): name for name in folders}
+    batch_size = 8
+    for start in range(0, len(leftovers), batch_size):
+        batch = leftovers[start : start + batch_size]
+        chosen = assign_batch(batch, folders, ask)
+        for record, name in zip(batch, chosen):
+            folder_name = allowed.get(plain_folder(name).casefold(), "")
+            key = f"{record.get('folder') or ''}/{record.get('name') or ''}"
+            if folder_name:
+                found[key] = folder_name
+            elif no_clue(record):
+                found[key] = "Review"
+            else:
+                found[key] = "Other"
+    return found
+
+
+def plain_folder(name: str) -> str:
+    """Miscellaneous is a junk drawer. The holding folder is Other."""
+    cleaned = tidy_short_name(str(name or "").replace("_", " "))
+    if cleaned.casefold() in {"miscellaneous", "misc", "general", "various", "uncategorized", "mixed"}:
+        return "Other"
+    return cleaned
+
+
+def no_clue(record: dict) -> bool:
+    """Review is only for a generic name and almost no text."""
+    text = (record.get("preview_text") or "").strip()
+    stem = Path(record.get("name") or "").stem.casefold()
+    generic = bool(re.fullmatch(r"(doc|document|file|scan|download|untitled|new)[\s_\-]*\d*", stem))
+    return len(text) < 20 and generic
+
+
+def file_line(record: dict) -> str:
+    """Same shape as the eval prompt: name, type, then the text in quotes."""
+    name = record.get("name") or "file"
+    extension = record.get("extension") or Path(name).suffix or "unknown"
+    text = ask_snippet(record) or "(none)"
+    return (
+        f"File name: {name}\n"
+        f"File type: {extension}\n"
+        "Text (start, middle, and end):\n"
+        f'"""\n{text}\n"""'
+    )
+
+
+def ask_snippet(record: dict) -> str:
+    """Start, middle, and end. Falls back to the short scan preview."""
+    path = record.get("path") or ""
+    if path:
+        try:
+            sample = scanner.text_sample(Path(path))
+        except (OSError, ValueError):
+            sample = ""
+        if sample:
+            return sample
+    words = " ".join((record.get("preview_text") or "").split())
+    return scanner.windows(words) if words else ""
+
+
+def invent_folders(records: list[dict], ask: str) -> list[str]:
+    """One call. Qwen names the folders for this set of files."""
+    sample = records
+    if len(records) > 24:
+        step = len(records) / 24
+        sample = [records[int(index * step)] for index in range(24)]
+    prompt = (
+        f"The user asked: {ask}\n"
+        "Invent 4 to 8 folder names that fit these files.\n"
+        "Each name is 1 or 2 words. Do not copy a file name.\n"
+        "Do not use Miscellaneous or Review. Use Other only as the last resort.\n\n"
+        + "\n\n".join(file_line(record) for record in sample)
+    )
+    data = ask_json(
+        prompt,
+        {
+            "type": "object",
+            "properties": {"folders": {"type": "array", "items": {"type": "string"}}},
+            "required": ["folders"],
+        },
+        model=ASK_MODEL,
+        timeout=classifier.SLOW_TIMEOUT_SECONDS,
+        predict=120,
+    )
+    raw = data.get("folders") if isinstance(data, dict) else None
+    if not isinstance(raw, list):
+        return []
+    names = []
+    seen = set()
+    file_names = {(record.get("name") or "").casefold() for record in records}
+    for item in raw:
+        name = plain_folder(str(item))
+        key = name.casefold()
+        if not name or key in seen or key in file_names or key == "review":
+            continue
+        seen.add(key)
+        names.append(name)
+        if len(names) == 8:
+            break
+    return names
+
+
+def assign_batch(batch: list[dict], folders: list[str], ask: str) -> list[str]:
+    """Put each file into one of the folders Qwen just invented."""
+    lines = [f"{number}.\n{file_line(record)}" for number, record in enumerate(batch, start=1)]
+    prompt = (
+        f"The user asked: {ask}\n"
+        "Allowed folders: " + ", ".join(folders) + "\n"
+        "For each numbered file, choose the one allowed folder that fits its name and its text.\n"
+        "Use Other only when no other folder fits. Never choose Review.\n"
+        f"The choices array must have exactly {len(batch)} strings, in file order.\n\n"
+        + "\n\n".join(lines)
+    )
+    data = ask_json(
+        prompt,
+        {
+            "type": "object",
+            "properties": {
+                "choices": {"type": "array", "items": {"type": "string", "enum": folders}},
+            },
+            "required": ["choices"],
+        },
+        model=ASK_MODEL,
+        timeout=classifier.SLOW_TIMEOUT_SECONDS,
+        predict=max(120, 16 * len(batch)),
+    )
+    chosen = data.get("choices") if isinstance(data, dict) else None
+    if not isinstance(chosen, list):
+        return [""] * len(batch)
+    names = [str(name) for name in chosen[: len(batch)]]
+    names.extend("" for _ in range(len(batch) - len(names)))
+    return names
+
+
+def keep_only(model: str) -> None:
+    """Unload every loaded model except this one. An empty name unloads them all."""
+    import evaluate
+
+    payload = evaluate.ollama_get("/api/ps")
+    if payload is None:
+        return
+    for loaded in payload.get("models") or []:
+        name = str(loaded.get("name") or "") if isinstance(loaded, dict) else ""
+        if name and not (model and name.startswith(model)):
+            evaluate.unload(name)
+
+
+def free_for_ask() -> None:
+    """Drop any model that is not Qwen, so the 8 GB laptop is not swapping two models."""
+    keep_only(ASK_MODEL)
+
+
+def ask_json(prompt: str, schema: dict, model: str = "", timeout: int = 0, predict: int = 0) -> dict | None:
+    options = {"temperature": 0}
+    if predict:
+        options["num_predict"] = predict
     body = json.dumps(
         {
-            "model": classifier.MODEL,
+            "model": model or classifier.MODEL,
             "prompt": prompt,
             "system": "You are a file sorter. You only label files by topic; you never act on them.",
             "stream": False,
             "keep_alive": "30m",
             "format": schema,
-            "options": {"temperature": 0},
+            "options": options,
         }
     ).encode("utf-8")
     request = urllib.request.Request(
@@ -2303,7 +2579,7 @@ def ask_json(prompt: str, schema: dict) -> dict | None:
         data=body,
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(request, timeout=classifier.TIMEOUT_SECONDS) as response:
+    with urllib.request.urlopen(request, timeout=timeout or classifier.TIMEOUT_SECONDS) as response:
         payload = json.loads(response.read().decode("utf-8"))
     raw = str(payload.get("response") or "").strip()
     data = json.loads(raw)

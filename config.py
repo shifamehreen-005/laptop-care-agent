@@ -19,5 +19,7 @@ CATEGORIES = [
 ]
 
 # Local Ollama models the eval can compare. The app uses DEFAULT_MODEL.
+# Ask an agent always uses ASK_MODEL.
 MODELS = ["llama3.2:1b", "llama3.2:3b", "qwen2.5:3b"]
 DEFAULT_MODEL = "llama3.2:1b"
+ASK_MODEL = "qwen2.5:3b"

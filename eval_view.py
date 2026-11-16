@@ -60,6 +60,10 @@ def show_eval(log_problem, notice, browse_folder) -> None:
         if st.checkbox(setup, value=setup in DEFAULT_ON, key=f"eval_setup_{index}", disabled=running):
             chosen_setups.append(setup)
     prompt = st.radio("Prompt", list(PROMPTS), horizontal=True, key="eval_prompt", disabled=running)
+    st.caption(
+        "With reason: the model explains each choice. "
+        "Without reason: it only names the folder. Both compares the two."
+    )
 
     if st.button("Run eval", key="run_eval", disabled=running or not chosen_setups):
         # Run on the next pass, with every control disabled, so a click can't restart it halfway.

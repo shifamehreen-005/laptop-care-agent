@@ -64,10 +64,14 @@ Why: duplicates go to `_safe_to_remove`, not their category, so evals score sort
 **16. Added 5 "hard" test files with none of the rule keywords** (a cover letter, a history essay, a reading summary, a gym payment, a lease).
 Why: with only keyword-friendly files, rules sorted almost everything and the AI never had a real job. Real Downloads folders are full of files like `doc1.docx` and `scan_0042.pdf`.
 
+**16b. `--hard 30` adds 30 more hard files on top of those five; `labels.csv` also has `difficulty` (clear / edge / normal).**
+The 30 are fixed by seed: 8 Receipts, 8 School, 8 Work, 6 Other; about 20 clear and 10 edge; mix of pdf/docx/txt/csv; vague names; meaning in the first 300 characters; no rule keywords and no sort-prompt examples. A keyword check stops the build if one slips in.
+Why: the first hard set was too small for model comparisons. Clear vs edge shows whether a model only handles the easy leftovers.
+
 ## Scanning
 
-**17. The scanner is read-only and previews only the first 300 characters of PDFs, Word files and text files.**
-Why: it's fast on a slow laptop, and short input suits the small model.
+**17. The scanner is read-only and previews only the first 300 characters of PDFs, Word, text and CSV files.**
+Why: it's fast on a slow laptop, and short input suits the small model. CSV previews let the AI (and the eval) see transaction and grade tables that used to look empty.
 
 **18. Duplicates are found by sha256 of the contents, exact matches only.**
 Why: the file name doesn't matter, and there's no guessing. An edited file is never a duplicate. Near-duplicates (a resized photo, an edited doc) are a later feature.
@@ -130,21 +134,33 @@ Why: undo used to leave empty category folders behind. `os.rmdir` can't delete a
 **34. The undo test compares folders as well as files, and covers duplicates inside category folders, a suggested fix applied and undone, and the keep rule.**
 Why: the first version only compared files, which is why it passed while empty folders were left behind.
 
-## Results so far (52 unique test files)
+## Results so far
+
+Early check (52 unique files, before `--hard 30`):
 
 | Setup | Correct | Review | Wrong moves |
 |---|---|---|---|
 | Rules only | 44 | 8 | 0 |
 | Rules + llama3.2:1b | 49 | 1 | 2 |
 
-The AI fixes 5 files and gets 2 wrong (a gym payment filed as Other, a lease filed as Work). That's why every plan needs the user's approval before anything moves.
+The AI fixed 5 files and got 2 wrong then (a gym payment filed as Other, a lease filed as Work). That's why every plan needs approval.
+
+Latest generated-folder eval (`--count 120 --hard 30`, 147 graded, duplicates excluded; see `evals/results_2026-11-15_183925.md`):
+
+| Setup | Prompt | Correct | Review | Wrong moves | Accuracy % |
+|---|---|---|---|---|---|
+| Rules only | none | 105 | 42 | 0 | 71.4 |
+| llama3.2:1b | with reason | 127 | 2 | 18 | 86.4 |
+| llama3.2:3b | with reason | 141 | 0 | 6 | 95.9 |
+| qwen2.5:3b | without reason | 143 | 1 | 3 | 97.3 |
+
+On that run, 3B models beat 1B on clear and edge AI files; qwen2.5:3b without reason had the fewest wrong moves (3). Duplicates: 11 found, 0 missed. Folder unchanged.
 
 ## Planned
 
-**35. In the app, label AI decisions ("AI guess") so the user knows which ones to double-check.**
+**35. Done.** In the app, AI decisions are labeled ("AI guess") so the user knows which ones to double-check.
 
-**36. Evals: rules only vs rules + 1B vs rules + 3B, on the generated folder and on 20 real files I label myself. Report accuracy, Review count, wrong moves and seconds per file.**
-Why: the generated test may be easier than real life, since the same project wrote the files and the rules. Honest numbers matter more than high ones.
+**36. Partly done.** Evals compare rules only vs 1B vs 3B (and qwen2.5:3b) on the generated folder, with accuracy, Review, wrong moves, seconds per AI file, and AI accuracy by category and difficulty. Still to do: ~20 real files labeled by hand.
 
 
 
@@ -260,6 +276,10 @@ Why: a popup that hangs after Yes feels like the click didn't work.
 A saved label (a default like Receipts, or one you made) shows only if files from this folder land in it, or a folder with that name is already there. The rest start hidden but stay in Move to. Moving a file in, or typing that name in Create label, brings the card back, and it stays. Review and Other still open from their tabs.
 Why: a folder of lecture notes showed empty Receipts, Installers and Photos cards, as if every folder were a Downloads folder.
 
+**63. Ask an agent is a toggle on the start page.**
+Turning it on does not change the scan. The scan still uses the model you picked, or rules only. Qwen runs only after you ask a question. Group by file type is the one fixed rule and does not call a model. Anything else, including "sort by semester", is Qwen's judgment. Nothing moves until Approve.
+Why: an earlier version sorted with Qwen during Scan and put files in Review before you asked anything.
+
 ## Evals
 
 **58. The prompt moved to `prompts/sort_prompt.txt`, with a definition per folder and an optional 10-word reason before the category. This replaces 28.**
@@ -278,3 +298,39 @@ Why: the scanner finds copies by their bytes, so every setup gets the same answe
 
 **62. Tidy uses the new prompt too, but keeps its 30-second timeout. The eval waits up to 120 seconds.**
 Why: a 3B model can be that slow, but the app shouldn't hang that long per file if Ollama stalls.
+
+**64. Eval reports AI accuracy by category and by difficulty (clear / edge / normal), counting only files the model decided.**
+Why: overall accuracy hides whether a model fails on Receipts or only on edge cases. Rules-only rows stay blank there because they never ask the model.
+
+**65. The app has one Download results button with a local-time name (`results_YYYY-MM-DD_HHMMSS.csv`). Streamlit's built-in table export is turned off.**
+Why: Streamlit's toolbar named files in UTC (`2026-11-15T22-49_export.csv`), which didn't match the saved eval reports.
+
+**66. Test-folder dates are round-tripped through the real local clock before stamping.**
+Why: a spring-forward hour (e.g. 2:56 AM on DST day) does not exist on Windows, so `make_test_folder.py` used to stop with "Windows did not keep the dates."
+
+**67. Wrong answers on the Eval screen are light red, and a Why true column sits after the true label.**
+Why: scanning a wide CSV for mismatches is slow; color and a short note make the mistakes obvious.
+
+**68. A normal scan has a Model menu. Ask an agent ignores it and always uses qwen2.5:3b.**
+The menu is `llama3.2:1b`, `llama3.2:3b`, or `qwen2.5:3b`. Only one model stays loaded. A leftover model is unloaded before the scan, because 8 GB cannot hold two.
+Why: the 1B model is fast and the 3B models are more accurate. That choice belongs on a normal scan. An open question like "sort these" stays on Qwen, which scored about 97% on the generated folder.
+
+**69. Group by file type is the only fixed Ask rule. Semester is not.**
+"Group by file type" maps the extension (HTML, PDFs, and so on). Any other ask, including "sort by semester", is sent to Qwen with the file name, the file type, and the start, middle, and end of the text. There is no Spring/Fall cutoff in code.
+Why: a semester boundary is a guess. The extension is not.
+
+**70. A normal scan does not ask the model about HTML, CSS, or code.**
+Those files go to Review unless a keyword rule already matched. Ask an agent still reads them.
+Why: sending each web file to the model made a normal scan slow, and the fixed categories are a poor fit for a lab folder.
+
+**71. Sort by what's inside keeps the rules, then Qwen names folders for the rest.**
+Screenshots, installers, photos, archives, and keyword matches stay in those folders. Qwen sees only the leftovers. It invents 4 to 8 folder names from a sample of up to 24 files, then places the leftovers in batches of 8. The answer is a `choices` list, one folder per file. Miscellaneous, Misc, General, Various, Uncategorized, and Mixed become Other. Other is always in the list. Review is only for a generic name (`doc`, `file`, `download`, `untitled`, and so on) with almost no text.
+Why: Qwen was inventing Miscellaneous and putting screenshots in Documents. An empty answer used to become Review, so the whole folder landed there.
+
+**72. Ask shows each file the way Eval does, but with the start, middle, and end.**
+Each file is the file name, the file type, then the text in quotes. A short file is sent whole. A longer one sends about 220 characters from the start, 140 from the middle, and 160 from the end. Eval still sends the first 300 characters and the fixed folders.
+Why: 40 characters was only the first line, so a topic later in the file was missed. Sending the whole file made the prompt too long for a 3B model.
+
+**73. The Eval page explains the Prompt choice before you run.**
+Under the radios: With reason means the model explains each choice. Without reason means it only names the folder. Both compares the two.
+Why: "reason" and "no reason" did not say what you were picking.

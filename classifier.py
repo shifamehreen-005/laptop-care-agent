@@ -36,6 +36,12 @@ EXTENSION_RULES = {
     ".jpeg": "Photos",
     ".heic": "Photos",
 }
+# A normal scan does not ask the model about these. Ask an agent still reads them.
+SKIP_AI = {
+    ".html", ".htm", ".css", ".js", ".ts", ".jsx", ".tsx",
+    ".py", ".java", ".c", ".cpp", ".h", ".php",
+    ".json", ".xml", ".svg", ".sql",
+}
 KEYWORD_RULES = (
     ("Receipts", ("invoice", "receipt", "order")),
     ("School", ("lecture", "assignment", "syllabus", "homework")),
@@ -81,6 +87,8 @@ def classify(
     if len(preview.strip()) < 20:
         return "Review", "no readable text", "rule"
     extension = file_extension(file)
+    if extension in SKIP_AI:
+        return "Review", "code or web file", "rule"
     category, reason, source = ask_model(
         file.get("name") or "", preview, extension, model=model, with_reason=with_reason, timeout=timeout
     )

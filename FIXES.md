@@ -89,3 +89,43 @@ Fix: the menu only gets its folder from session state.
 **22. The popup stayed up for a moment after Yes.**
 Yes did the work inside the popup, so the popup only closed once the files had moved.
 Fix: Yes closes the popup first. The page then does the work under a "Working…" spinner placed where the popup was, so it disappears at once. If you click while Battery is still loading, the click waits for it to finish.
+
+**23. `make_test_folder.py --count 120` stopped on Invoice_15.pdf.**
+Windows did not keep the dates: the planned time fell in the spring-forward DST gap (2:56 AM), which does not exist locally, so the stamp came back as 3:56 AM and the check failed.
+Fix: dates are round-tripped through the real local clock before writing, and the stamp check uses that same time.
+
+**24. Eval download was named like `2026-11-15T22-49_export.csv`.**
+That came from Streamlit's built-in dataframe toolbar export, which uses UTC and can't be renamed.
+Fix: that export is disabled in `.streamlit/config.toml`. Eval keeps one **Download results** button that uses the local-time `results_*.csv` name.
+
+**25. Removing `CATEGORY_DESCRIPTIONS` from classifier broke the app.**
+`folders.py` still imports those short lines for the Tidy folder cards.
+Fix: the descriptions stayed for the cards; only the model prompt moved to `prompts/sort_prompt.txt`.
+
+**26. A dead Ollama model could hang the eval for minutes.**
+Each silent file waited the full timeout.
+Fix: after three silent AI replies in a row, that setup is skipped and the model is unloaded. Warm-up failure also unloads.
+
+**27. Remove on Review also removed the Web Development suggestion.**
+Those files were still in Review. The suggestion only shows while at least two of its files are still there. Remove sent them to No folder, so the card vanished.
+Fix: none yet. Add the suggestion first if you want to keep it. See `ideas.md`.
+
+**28. `.html` files all went to Review.**
+There is no rule for `.html` or `.css`, and the scanner used to not read inside them, so the model was never asked.
+Fix: Ask an agent reads the text and asks `qwen2.5:3b`. A normal scan still leaves code and web files in Review so it stays fast.
+
+**29. Ask an agent was slow, and a normal scan got slow too.**
+Qwen stayed in memory next to `llama3.2:1b`, so the 8 GB laptop was swapping. Ask an agent also called Qwen once per 8 files. After the scanner started reading HTML, a normal scan sent those files to the model one by one.
+Fix: only one model stays loaded. Ask an agent sends up to 40 files in one call. A normal scan skips the model for HTML, CSS, and code.
+
+**30. A normal scan of the test folder still takes about a minute.**
+Checked with Ask an agent off and only `llama3.2:1b` loaded. 158 files: 4.4 seconds to read, 116 sorted by rules, 42 documents sent to the model at about 1.1–1.6 seconds each.
+Fix: none. Those documents have no rule, so the model has to see them. Ideas for the slow part are in `ideas.md`.
+
+**31. Sort by what's inside put every file in Review, then in Miscellaneous.**
+An empty Qwen answer became Review. The model also copied file names, or returned the folder list instead of one folder per file, so the batch was thrown out. Screenshots and installers were sent to Qwen too, and landed in Documents or Scripts. The one call of up to 40 files from fix 29 is gone.
+Fix: rules place the obvious files first. Qwen invents folder names only for the leftovers and answers with a `choices` list, 8 files at a time. Miscellaneous becomes Other. Review is only when the name is generic and there is almost no text.
+
+**32. Ask only saw the first 40 characters.**
+The topic was often later in the file, so a bill or a homework note was easy to misfile.
+Fix: Ask sends the start, middle, and end, in the same name, type, and quoted-text shape as Eval. A short file is sent whole. Eval still uses the first 300 characters.
