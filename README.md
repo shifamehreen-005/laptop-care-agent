@@ -2,15 +2,25 @@
 
 A small AI helper that tidies a messy folder. It suggests a plan, waits for your approval, and can undo everything. It runs fully on your laptop.
 
-> **[Demo video: add link]** · **[Screenshot: add image]**
+> **[Watch the demo](https://www.loom.com/share/4fa257fc34ea4ca79ac0df737ac82bba)**
 
 ## Why I built this
 
 My own Downloads folder had grown to 48 GB: 76,507 files across 5,671 folders. Resumes, cover letters, screenshots, CSVs and old installers, all mixed together. Sorting it meant opening file after file, and I didn't trust a tool to move things without showing me first.
 
+<img src="images/downloads-folder.png" alt="Downloads folder properties: 48.0 GB, 76,507 files, 5,671 folders" width="520">
+
 So I built something to do the boring part (reading each file and suggesting where it belongs) without the risk. It shows its plan, waits for my yes, and can undo everything.
 
 It's still a work in progress: a prototype that only makes changes in a test folder for now.
+
+## How it looks
+
+[Watch the demo](https://www.loom.com/share/4fa257fc34ea4ca79ac0df737ac82bba). Nothing moves until Approve. Undo puts every file back.
+
+<img src="images/review.png" alt="Review screen: files sorted into Receipts, School, and Screenshots, waiting for Approve" width="720">
+
+<img src="images/done.png" alt="Done screen: 52 files moved, 5 duplicates set aside, Undo under the green bar" width="720">
 
 ## How it works
 
